@@ -14,7 +14,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:3002',
+        target: 'http://adealy-backend:3001',
         changeOrigin: true,
       },
     },
