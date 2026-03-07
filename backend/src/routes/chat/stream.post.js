@@ -164,7 +164,7 @@ async function handler(req, res) {
 
     try {
         const result = await ai.models.generateContent({
-            model: 'models/gemini-2.5-flash-lite',
+            model: 'gemini-1.5-flash',
             contents: contents,
             config: {
                 systemInstruction: systemInstruction + `\n\nIMPORTANT: The current date is ${new Date().toISOString().split('T')[0]}. All plans, recommendations, and trips MUST use dates in the future relative to this current date unless the user explicitly requests otherwise.`,

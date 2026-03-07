@@ -26,7 +26,7 @@ import {
   Users,
   Lock,
 } from "lucide-react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Map, MapControls, MapMarker, MarkerContent, MarkerPopup, type MapRef } from "@/components/ui/map";
@@ -40,9 +40,9 @@ import { supabase } from "@/lib/supabase";
 export default function PlannerPage({ roomId }: { roomId?: string }) {
   const [, setLocation] = useLocation();
 
-  // State
   const [prompt, setPrompt] = useState("");
   const [aiStatus, setAiStatus] = useState<'idle' | 'thinking' | 'cooldown'>('idle');
+  const [streamStatus, setStreamStatus] = useState<{ step: number, total: number, message: string } | null>(null);
   const [members, setMembers] = useState<any[]>([]);
   const [isOwner, setIsOwner] = useState(false);
   const [accessDenied, setAccessDenied] = useState(false);
@@ -149,17 +149,34 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
         .from('room_members')
         .select('*, user_profiles(email, first_name, last_name)')
         .eq('room_id', roomId);
-      if (memData) {
+
+      if (memData && memData.length > 0) {
         const me = memData.find((m: any) => m.user_id === user.sub);
         if (!me) {
+          // If room has members but user isn't one, deny access
           setAccessDenied(true);
           return;
         }
         setMembers(memData);
         if (me.role === 'owner') setIsOwner(true);
       } else {
-        setAccessDenied(true);
-        return;
+        // If no members exist yet, the user is likely the creator arriving for the first time
+        // Let's create their owner membership record
+        const { error } = await supabase.from('room_members').insert({
+          room_id: roomId,
+          user_id: user.sub,
+          role: 'owner',
+          can_prompt_ai: true
+        });
+
+        if (error) {
+          console.error("Failed to auto-join room:", error);
+          setAccessDenied(true);
+          return;
+        }
+
+        setIsOwner(true);
+        setMembers([{ user_id: user.sub, role: 'owner', can_prompt_ai: true }]);
       }
 
       // 2. Load room details
@@ -235,19 +252,36 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
     const currentPrompt = prompt;
     setPrompt("");
 
-    await supabase.from('messages').insert({
+    const { error } = await supabase.from('messages').insert({
       room_id: roomId,
       sender_id: user?.sub,
       content: currentPrompt,
       is_ai: false
     });
+    if (error) console.error("Failed to save message:", error);
 
-    if (currentPrompt.includes('@Adealy')) {
+    if (currentPrompt.toLowerCase().includes('@adealy')) {
+      // Simulate the 5-step animation before hitting the real API
+      setAiStatus('thinking');
+      try {
+        const { mockStreamGenerator } = await import('@/services/mock-trip-service');
+        for await (const chunk of mockStreamGenerator(currentPrompt)) {
+          if (chunk.type === 'progress') {
+            setStreamStatus({ step: chunk.step, total: chunk.totalSteps, message: chunk.message });
+          }
+        }
+      } catch (err) {
+        console.warn("Mock stream failed", err);
+      } finally {
+        setStreamStatus(null);
+      }
+
+      // Now hit the real backend
       fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ room_id: roomId, prompt: currentPrompt, auth0_id: user?.sub })
-      }).catch(console.error);
+      }).catch(err => console.error("Chat API error:", err));
     }
   };
 
@@ -292,24 +326,25 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   }, [messages]);
 
   // Derived state
-  const displayedCards = cards.filter(c => {
-    const dayMatch = selectedDay === 0 || c.day === selectedDay;
-    const layerMatch = activeLayer === 'all' || c.type === activeLayer;
+  const safeCards = Array.isArray(cards) ? cards : [];
+  const displayedCards = safeCards.filter(c => {
+    const dayMatch = selectedDay === 0 || c?.day === selectedDay;
+    const layerMatch = activeLayer === 'all' || c?.type === activeLayer;
     return dayMatch && layerMatch;
   });
 
   // Dynamic Budget Calculation
-  const calculatedBudgetUsed = cards.reduce((sum, card) => sum + (card.data?.price || 0), 0);
+  const calculatedBudgetUsed = safeCards.reduce((sum, card) => sum + (card?.data?.price || 0), 0);
   const estimatedBudget = trip?.summary?.estimatedBudget || (calculatedBudgetUsed > 0 ? Math.ceil(calculatedBudgetUsed * 1.2 / 500) * 500 : 2500);
   const budgetProgress = estimatedBudget > 0 ? Math.min((calculatedBudgetUsed / estimatedBudget) * 100, 100) : 0;
 
   // Layer Subtotals
-  const stayCards = cards.filter(c => c.type === 'stay');
-  const stayCost = stayCards.reduce((sum, c) => sum + (c.data?.price || 0), 0);
-  const activityCards = cards.filter(c => c.type === 'activity');
-  const activityCost = activityCards.reduce((sum, c) => sum + (c.data?.price || 0), 0);
-  const transportCards = cards.filter(c => c.type === 'transport');
-  const transportCost = transportCards.reduce((sum, c) => sum + (c.data?.price || 0), 0);
+  const stayCards = safeCards.filter(c => c?.type === 'stay');
+  const stayCost = stayCards.reduce((sum, c) => sum + (c?.data?.price || 0), 0);
+  const activityCards = safeCards.filter(c => c?.type === 'activity');
+  const activityCost = activityCards.reduce((sum, c) => sum + (c?.data?.price || 0), 0);
+  const transportCards = safeCards.filter(c => c?.type === 'transport');
+  const transportCost = transportCards.reduce((sum, c) => sum + (c?.data?.price || 0), 0);
 
   // Access Denied Screen
   if (accessDenied) {
@@ -376,8 +411,8 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                 </button>
                 {Array.from({ length: trip.days }).map((_, i) => {
                   const dayNum = i + 1;
-                  const dayCards = cards.filter(c => c.day === dayNum);
-                  const dayCost = dayCards.reduce((sum, c) => sum + (c.data?.price || 0), 0);
+                  const dayCards = safeCards.filter(c => c?.day === dayNum);
+                  const dayCost = dayCards.reduce((sum, c) => sum + (c?.data?.price || 0), 0);
 
                   return (
                     <div key={i} className="flex flex-col gap-1">
@@ -616,7 +651,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 
               {/* Dynamic Markers */}
               {displayedCards.map((card) => (
-                card.position && (
+                card.position && typeof card.position.lat === 'number' && typeof card.position.lng === 'number' && (
                   <MapMarker
                     key={card.id}
                     latitude={card.position.lat}

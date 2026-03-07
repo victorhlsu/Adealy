@@ -2,7 +2,7 @@ const { GoogleGenAI } = require('@google/genai');
 const { supabase } = require('../../supabase/client');
 const dotenv = require('dotenv');
 const path = require('path');
-dotenv.config({ path: path.resolve(__dirname, '../../../../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -64,7 +64,7 @@ Use realistic locations, coordinates, and prices for whatever the user requested
 async function handler(req, res) {
     // We are no longer using SSE directly to the frontend because we rely on Supabase Realtime!
     // But we still return a response so the client knows we received it.
-    
+
     const { room_id, prompt, auth0_id } = req.body || {};
 
     if (!room_id || !prompt || !auth0_id) {
@@ -75,72 +75,59 @@ async function handler(req, res) {
     res.status(200).json({ success: true, message: "Request received." });
 
     // Ensure the message has @Adealy before proceeding
-    if (!prompt.includes('@Adealy')) {
+    // Check if @adealy is mentioned (case-insensitive)
+    if (!prompt.toLowerCase().includes('@adealy')) {
+        console.log('No @adealy mention found in prompt, skipping AI.');
         return;
     }
 
     try {
-        // Check Room State and Cooldown
-        const { data: roomState, error: stateError } = await supabase
+        console.log('AI pipeline started...');
+        // 1. Fetch room state for cooldown check
+        const { data: room, error: roomError } = await supabase
             .from('room_state')
             .select('*')
             .eq('room_id', room_id)
             .single();
 
-        if (stateError && stateError.code !== 'PGRST116') {
-            console.error("State Fetch Error:", stateError);
+        if (roomError || !room) {
+            console.error('Room state fetch error:', roomError);
             return;
         }
 
-        if (roomState?.ai_status === 'thinking' || roomState?.ai_status === 'cooldown') {
-            await supabase.from('messages').insert({
-                room_id,
-                content: "I am currently thinking or cooling down! Please give me a second.",
-                is_ai: true
-            });
-            return;
-        }
+        // Optional: Implement cooldown logic here if needed
 
-        // Check Permissions
-        const { data: member, error: memberError } = await supabase
-            .from('room_members')
-            .select('*')
-            .eq('room_id', room_id)
-            .eq('user_id', auth0_id)
-            .single();
+        // 2. Update room state to reflect active prompt
+        await supabase
+            .from('room_state')
+            .update({
+                last_prompted_at: new Date().toISOString(),
+                last_prompted_by: auth0_id,
+                ai_status: 'thinking'
+            })
+            .eq('room_id', room_id);
 
-        if (memberError || (!member.can_prompt_ai && member.role !== 'owner')) {
-            await supabase.from('messages').insert({
-                room_id,
-                content: "You do not have permission to prompt me in this room.",
-                is_ai: true
-            });
-            return;
-        }
-
-        // 1. Lock state to thinking and focus view to chat
-        await supabase.from('room_state').upsert({
-            room_id,
-            ai_status: 'thinking',
-            last_prompted_by: auth0_id,
-            focused_view: 'chat',
-            updated_at: new Date().toISOString()
-        }, { onConflict: 'room_id' });
-
-        // 2. Fetch history for context
+        // 3. Fetch conversation history
+        console.log('Fetching conversation history for room:', room_id);
         const { data: messages, error: messagesError } = await supabase
             .from('messages')
             .select('is_ai, content')
             .eq('room_id', room_id)
             .order('created_at', { ascending: true })
-            .limit(50); // Get last 50 messages
+            .limit(50);
 
+        if (messagesError) {
+            console.error('Error fetching history:', messagesError);
+            return;
+        }
+
+        // 4. Generate AI response
         const contents = (messages || []).map(m => ({
             role: m.is_ai ? 'model' : 'user',
             parts: [{ text: m.content }]
         }));
 
-        // 3. Call Gemini
+        console.log('Calling Gemini API...');
         const result = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: contents,
@@ -150,9 +137,10 @@ async function handler(req, res) {
                 responseMimeType: "application/json"
             }
         });
+        console.log('Gemini API response received.');
 
         const geminiResponseText = result.text;
-        
+
         // Ensure parsing works
         let finalMessage = "I processed your request, but couldn't format it right.";
         let tripData = null;
@@ -198,7 +186,7 @@ async function handler(req, res) {
 
     } catch (error) {
         console.error("Error in AI pipeline:", error);
-         await supabase.from('room_state').update({
+        await supabase.from('room_state').update({
             ai_status: 'idle',
             updated_at: new Date().toISOString()
         }).eq('room_id', room_id);

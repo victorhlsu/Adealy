@@ -1,4 +1,4 @@
-const supabase = require('../../lib/supabase').default;
+const { supabase } = require('../../supabase/client');
 
 const handler = async (req, res) => {
 	try {
