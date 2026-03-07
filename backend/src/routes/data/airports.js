@@ -184,7 +184,11 @@ const handler = (req, res) => {
 			filtered = filtered.filter((a) => a.countryCode === iso);
 		}
 		if (normCity) {
-			filtered = filtered.filter((a) => normalize(a.city) === normCity);
+			filtered = filtered.filter((a) =>
+				normalize(a.city).includes(normCity) ||
+				normalize(a.name).includes(normCity) ||
+				normalize(a.code).includes(normCity)
+			);
 		}
 
 		const latNum = typeof latitude === 'number' ? latitude : Number(latitude);

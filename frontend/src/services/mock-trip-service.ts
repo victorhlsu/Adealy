@@ -67,7 +67,23 @@ const MOCK_CARDS: TripCard[] = [
     }
 ];
 
-export const mockStreamGenerator = async function* (_prompt: string): AsyncGenerator<StreamChunk, void, unknown> {
+export const mockStreamGenerator = async function* (prompt: string): AsyncGenerator<StreamChunk, void, unknown> {
+    if (prompt === "BOOKING_FLOW") {
+        yield { type: 'progress', message: 'Initiating secure payment...', step: 1, totalSteps: 6 };
+        await new Promise(r => setTimeout(r, 1000));
+        yield { type: 'progress', message: 'Reserving flights and transport...', step: 2, totalSteps: 6 };
+        await new Promise(r => setTimeout(r, 1000));
+        yield { type: 'progress', message: 'Confirming hotel accommodations...', step: 3, totalSteps: 6 };
+        await new Promise(r => setTimeout(r, 1000));
+        yield { type: 'progress', message: 'Booking Uber to hotel...', step: 4, totalSteps: 6 };
+        await new Promise(r => setTimeout(r, 1000));
+        yield { type: 'progress', message: 'Securing attraction tickets...', step: 5, totalSteps: 6 };
+        await new Promise(r => setTimeout(r, 1000));
+        yield { type: 'progress', message: 'Everythings set! Finalizing concierge...', step: 6, totalSteps: 6 };
+        await new Promise(r => setTimeout(r, 1200));
+        return;
+    }
+
     yield { type: 'progress', message: 'Analyzing your request...', step: 1, totalSteps: 5 };
     await new Promise(r => setTimeout(r, 800));
 

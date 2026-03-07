@@ -9,7 +9,7 @@
     "start": "node src/server.js"
   },
   "dependencies": {
-    "@google/genai": "^1.35.0",
+    "@google/generative-ai": "^0.21.0",
     "@supabase/supabase-js": "^2.98.0",
     "cloudinary": "^2.9.0",
     "cors": "^2.8.5",
@@ -19,7 +19,6 @@
     "morgan": "^1.10.0"
   },
   "devDependencies": {
-    "@google/generative-ai": "^0.6.0",
     "nodemon": "^3.1.14"
   }
 }

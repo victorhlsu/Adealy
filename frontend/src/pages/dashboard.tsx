@@ -2,17 +2,39 @@ import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { useAuth0 } from "@auth0/auth0-react";
 import { supabase } from "@/lib/supabase";
-import { Plus, Map as MapIcon, ChevronRight, LogOut, User as UserIcon } from "lucide-react";
+import { Plus, Map as MapIcon, ChevronRight, LogOut, User as UserIcon, Calendar, Plane, MapPin, Users as UsersIcon, X, Search, ArrowRight, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ModeToggle } from "@/components/mode-toggle";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 
 export default function DashboardPage() {
     const [, setLocation] = useLocation();
     const { user, isAuthenticated, isLoading, logout } = useAuth0();
     const [rooms, setRooms] = useState<any[]>([]);
     const [loadingRooms, setLoadingRooms] = useState(true);
+
+    // Wizard State
+    const [showWizard, setShowWizard] = useState(false);
+    const [wizardStep, setWizardStep] = useState(1);
+    const [destination, setDestination] = useState("");
+    const [startDate, setStartDate] = useState("");
+    const [endDate, setEndDate] = useState("");
+    const [travelers, setTravelers] = useState({ adults: 1, children: 0 });
+    const [selectedFlight, setSelectedFlight] = useState<any>(null);
+    const [flights, setFlights] = useState<any[]>([]);
+    const [searchingFlights, setSearchingFlights] = useState(false);
+    const [hasSearchedFlights, setHasSearchedFlights] = useState(false);
+    const [fromAirports, setFromAirports] = useState<any[]>([]);
+    const [toAirports, setToAirports] = useState<any[]>([]);
+    const [fromAirport, setFromAirport] = useState("");
+    const [toAirport, setToAirport] = useState("");
+    const [creatingTrip, setCreatingTrip] = useState(false);
+    const [flightType, setFlightType] = useState<'return' | 'one-way'>('return');
+    const [wizardError, setWizardError] = useState<string | null>(null);
 
     useEffect(() => {
         if (!isAuthenticated || !user?.sub) return;
@@ -88,18 +110,18 @@ export default function DashboardPage() {
                     {/* Decorative Shapes */}
                     <div className="absolute top-10 -right-20 w-80 h-80 rounded-full bg-white opacity-5 pointer-events-none" />
                     <div className="absolute -bottom-10 left-10 w-40 h-40 rotate-45 bg-white opacity-5 pointer-events-none" />
-                    
+
                     <div className="max-w-5xl mx-auto relative z-10 flex flex-col md:flex-row md:items-end justify-between gap-8">
                         <div className="space-y-2">
-                             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/20 text-white text-[10px] font-black uppercase tracking-widest">
+                            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/20 text-white text-[10px] font-black uppercase tracking-widest">
                                 <MapIcon className="w-3 h-3" />
                                 <span>Travel Command Center</span>
-                             </div>
-                             <h1 className="text-5xl md:text-7xl font-black text-white tracking-tighter leading-none">YOUR TRIPS</h1>
-                             <p className="text-xl text-white/80 font-medium">Ready for your next adventure, {user?.given_name || 'Traveler'}?</p>
+                            </div>
+                            <h1 className="text-5xl md:text-7xl font-black text-white tracking-tighter leading-none">YOUR TRIPS</h1>
+                            <p className="text-xl text-white/80 font-medium">Ready for your next adventure, {user?.given_name || 'Traveler'}?</p>
                         </div>
-                        <Button 
-                            onClick={() => setLocation("/planner")} 
+                        <Button
+                            onClick={() => setShowWizard(true)}
                             className="h-16 px-8 text-lg font-black bg-white text-primary rounded-md transition-all duration-200 hover:scale-110 active:scale-95 border-none shadow-none group"
                         >
                             <Plus className="h-6 w-6 mr-2 group-hover:rotate-90 transition-transform duration-300" /> NEW JOURNEY
@@ -118,14 +140,14 @@ export default function DashboardPage() {
                                 <h3 className="text-3xl font-black text-gray-900 tracking-tight">NO TRIPS YET</h3>
                                 <p className="text-gray-500 font-medium mt-2 max-w-sm">Create your first trip to start planning your next journey with Adealy.</p>
                             </div>
-                            <Button onClick={() => setLocation("/planner")} className="h-14 px-10 font-black bg-primary text-white transition-all hover:scale-105 active:scale-95">
+                            <Button onClick={() => setShowWizard(true)} className="h-14 px-10 font-black bg-primary text-white transition-all hover:scale-105 active:scale-95">
                                 GET STARTED
                             </Button>
                         </div>
                     ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                             {rooms.map((room) => (
-                                <Card 
+                                <Card
                                     key={room.id}
                                     className="group relative overflow-hidden border-4 border-gray-100 bg-white hover:border-primary/30 transition-all cursor-pointer shadow-none p-0 flex flex-col rounded-lg"
                                     onClick={() => setLocation(`/planner/${room.id}`)}
@@ -160,6 +182,492 @@ export default function DashboardPage() {
                     )}
                 </section>
             </main>
+
+            {/* Trip Creation Wizard Modal */}
+            {showWizard && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                    <div className="bg-white border-4 border-gray-900 rounded-lg w-full max-w-2xl overflow-hidden flex flex-col shadow-2xl animate-in zoom-in-95 duration-200">
+                        {/* Status Bar */}
+                        <div className="h-2 w-full bg-gray-100 flex">
+                            {[1, 2, 3, 4].map((s) => (
+                                <div
+                                    key={s}
+                                    className={cn(
+                                        "flex-1 h-full transition-all duration-500",
+                                        wizardStep >= s ? "bg-primary" : "bg-gray-100"
+                                    )}
+                                />
+                            ))}
+                        </div>
+
+                        {/* Wizard Header */}
+                        <div className="px-8 py-6 flex items-center justify-between border-b-2 border-gray-100">
+                            <div>
+                                <p className="text-[10px] font-black uppercase tracking-widest text-primary mb-1">Step {wizardStep} of 4</p>
+                                <h2 className="text-2xl font-black text-gray-900 tracking-tighter uppercase">
+                                    {wizardStep === 1 && "Where are we going?"}
+                                    {wizardStep === 2 && "When is the trip?"}
+                                    {wizardStep === 3 && "Who is coming?"}
+                                    {wizardStep === 4 && "Find your flights"}
+                                </h2>
+                            </div>
+                            <button onClick={() => setShowWizard(false)} className="h-10 w-10 flex items-center justify-center rounded-md hover:bg-gray-100 transition-colors">
+                                <X className="h-6 w-6 text-gray-400" />
+                            </button>
+                        </div>
+
+                        {/* Wizard Content */}
+                        <div className="flex-1 overflow-y-auto p-8 min-h-[400px]">
+                            {wizardStep === 1 && (
+                                <div className="space-y-6">
+                                    <div className="space-y-2">
+                                        <Label className="text-xs font-black uppercase tracking-widest text-gray-500">Destination City</Label>
+                                        <div className="relative">
+                                            <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
+                                            <Input
+                                                value={destination}
+                                                onChange={(e) => setDestination(e.target.value)}
+                                                placeholder="e.g. Kyoto, Japan"
+                                                className="h-14 pl-12 text-lg font-bold border-2 focus:border-primary shadow-none"
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="p-4 bg-blue-50 border-2 border-blue-100 rounded-lg">
+                                        <p className="text-sm font-medium text-blue-700">Tip: Start with a specific city for the best flight and hotel options.</p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {wizardStep === 2 && (
+                                <div className="space-y-6">
+                                    <div className="flex bg-gray-100 p-1 rounded-lg">
+                                        <button
+                                            onClick={() => setFlightType('return')}
+                                            className={cn(
+                                                "flex-1 py-2 text-xs font-black uppercase tracking-widest rounded-md transition-all",
+                                                flightType === 'return' ? "bg-white text-primary shadow-sm" : "text-gray-500 hover:text-gray-700"
+                                            )}
+                                        >
+                                            Round Trip
+                                        </button>
+                                        <button
+                                            onClick={() => setFlightType('one-way')}
+                                            className={cn(
+                                                "flex-1 py-2 text-xs font-black uppercase tracking-widest rounded-md transition-all",
+                                                flightType === 'one-way' ? "bg-white text-primary shadow-sm" : "text-gray-500 hover:text-gray-700"
+                                            )}
+                                        >
+                                            One Way
+                                        </button>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-6">
+                                        <div className="space-y-2">
+                                            <Label className="text-xs font-black uppercase tracking-widest text-gray-500">Departure</Label>
+                                            <div className="relative">
+                                                <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
+                                                <Input
+                                                    type="date"
+                                                    value={startDate}
+                                                    onChange={(e) => setStartDate(e.target.value)}
+                                                    className="h-14 pl-12 text-lg font-bold border-2 focus:border-primary shadow-none"
+                                                />
+                                            </div>
+                                        </div>
+                                        <div className={cn("space-y-2 transition-opacity", flightType === 'one-way' && "opacity-30 pointer-events-none")}>
+                                            <Label className="text-xs font-black uppercase tracking-widest text-gray-500">Return</Label>
+                                            <div className="relative">
+                                                <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
+                                                <Input
+                                                    type="date"
+                                                    disabled={flightType === 'one-way'}
+                                                    value={startDate && !endDate && flightType === 'return' ? startDate : endDate}
+                                                    onChange={(e) => setEndDate(e.target.value)}
+                                                    className="h-14 pl-12 text-lg font-bold border-2 focus:border-primary shadow-none"
+                                                />
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {wizardStep === 3 && (
+                                <div className="space-y-6">
+                                    <div className="grid grid-cols-2 gap-6">
+                                        <div className="space-y-2">
+                                            <Label className="text-xs font-black uppercase tracking-widest text-gray-500">Adults</Label>
+                                            <div className="flex items-center gap-4">
+                                                <Button
+                                                    variant="outline"
+                                                    onClick={() => setTravelers(prev => ({ ...prev, adults: Math.max(1, prev.adults - 1) }))}
+                                                    className="h-12 w-12 text-xl font-bold border-2"
+                                                >-</Button>
+                                                <span className="text-2xl font-black">{travelers.adults}</span>
+                                                <Button
+                                                    variant="outline"
+                                                    onClick={() => setTravelers(prev => ({ ...prev, adults: prev.adults + 1 }))}
+                                                    className="h-12 w-12 text-xl font-bold border-2"
+                                                >+</Button>
+                                            </div>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <Label className="text-xs font-black uppercase tracking-widest text-gray-500">Children</Label>
+                                            <div className="flex items-center gap-4">
+                                                <Button
+                                                    variant="outline"
+                                                    onClick={() => setTravelers(prev => ({ ...prev, children: Math.max(0, prev.children - 1) }))}
+                                                    className="h-12 w-12 text-xl font-bold border-2"
+                                                >-</Button>
+                                                <span className="text-2xl font-black">{travelers.children}</span>
+                                                <Button
+                                                    variant="outline"
+                                                    onClick={() => setTravelers(prev => ({ ...prev, children: prev.children + 1 }))}
+                                                    className="h-12 w-12 text-xl font-bold border-2"
+                                                >+</Button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-4 p-4 border-2 border-dashed border-gray-200 rounded-lg">
+                                        <div className="h-12 w-12 rounded-full bg-gray-100 flex items-center justify-center">
+                                            <UsersIcon className="h-6 w-6 text-gray-400" />
+                                        </div>
+                                        <div>
+                                            <p className="text-sm font-bold text-gray-900">{travelers.adults + travelers.children} Travelers</p>
+                                            <p className="text-xs text-gray-500 font-medium">Pricing will be adjusted per person.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {wizardStep === 4 && (
+                                <div className="space-y-6">
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="space-y-2 relative">
+                                            <Label className="text-xs font-black uppercase tracking-widest text-gray-500">From Airport</Label>
+                                            <div className="relative">
+                                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                                                <Input
+                                                    value={fromAirport}
+                                                    onChange={async (e) => {
+                                                        const val = e.target.value;
+                                                        setFromAirport(val);
+                                                        if (val.length >= 2) {
+                                                            try {
+                                                                const res = await fetch('/api/data/airports', {
+                                                                    method: 'POST',
+                                                                    headers: { 'Content-Type': 'application/json' },
+                                                                    body: JSON.stringify({ city: val, limit: 10 })
+                                                                });
+                                                                const data = await res.json();
+                                                                setFromAirports(data.airports || []);
+                                                            } catch (e) {
+                                                                console.error("Failed to search from airports", e);
+                                                            }
+                                                        } else {
+                                                            setFromAirports([]);
+                                                        }
+                                                    }}
+                                                    placeholder="City or Airport Code"
+                                                    className="h-12 pl-10 text-sm font-bold border-2 shadow-none"
+                                                />
+                                            </div>
+                                            {fromAirports.length > 0 && fromAirport.length >= 2 && (
+                                                <div className="absolute top-full left-0 w-full mt-1 bg-white border-2 border-gray-900 rounded-lg shadow-xl z-50 max-h-[150px] overflow-y-auto">
+                                                    {fromAirports.map(a => (
+                                                        <button
+                                                            key={a.code}
+                                                            onClick={() => { setFromAirport(a.code); setFromAirports([]); }}
+                                                            className="w-full px-4 py-3 text-left hover:bg-gray-100 border-b border-gray-100 last:border-none group"
+                                                        >
+                                                            <div className="flex items-center justify-between">
+                                                                <span className="font-black text-sm text-primary">{a.code}</span>
+                                                                <span className="text-[10px] font-bold text-gray-400 uppercase">{a.city}, {a.countryCode}</span>
+                                                            </div>
+                                                            <p className="text-[10px] font-medium text-gray-500 truncate">{a.name}</p>
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div className="space-y-2 relative">
+                                            <Label className="text-xs font-black uppercase tracking-widest text-gray-500">To Destination</Label>
+                                            <div className="relative">
+                                                <Plane className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                                                <Input
+                                                    value={toAirport}
+                                                    onChange={async (e) => {
+                                                        const val = e.target.value;
+                                                        setToAirport(val);
+                                                        if (val.length >= 2) {
+                                                            try {
+                                                                const res = await fetch('/api/data/airports', {
+                                                                    method: 'POST',
+                                                                    headers: { 'Content-Type': 'application/json' },
+                                                                    body: JSON.stringify({
+                                                                        city: val,
+                                                                        countryName: destination.split(',').pop()?.trim(),
+                                                                        limit: 10
+                                                                    })
+                                                                });
+                                                                const data = await res.json();
+                                                                setToAirports(data.airports || []);
+                                                            } catch (e) {
+                                                                console.error("Failed to search to airports", e);
+                                                            }
+                                                        } else {
+                                                            setToAirports([]);
+                                                        }
+                                                    }}
+                                                    placeholder="City or Airport Code"
+                                                    className="h-12 pl-10 text-sm font-bold border-2 shadow-none"
+                                                />
+                                            </div>
+                                            {toAirports.length > 0 && toAirport.length >= 2 && (
+                                                <div className="absolute top-full left-0 w-full mt-1 bg-white border-2 border-gray-900 rounded-lg shadow-xl z-50 max-h-[150px] overflow-y-auto">
+                                                    {toAirports.map(a => (
+                                                        <button
+                                                            key={a.code}
+                                                            onClick={() => { setToAirport(a.code); setToAirports([]); }}
+                                                            className="w-full px-4 py-3 text-left hover:bg-gray-100 border-b border-gray-100 last:border-none group"
+                                                        >
+                                                            <div className="flex items-center justify-between">
+                                                                <span className="font-black text-sm text-primary">{a.code}</span>
+                                                                <span className="text-[10px] font-bold text-gray-400 uppercase">{a.city}, {a.countryCode}</span>
+                                                            </div>
+                                                            <p className="text-[10px] font-medium text-gray-500 truncate">{a.name}</p>
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <Button
+                                        onClick={async () => {
+                                            setSearchingFlights(true);
+                                            setHasSearchedFlights(true);
+                                            try {
+                                                const res = await fetch('/api/data/flights', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({
+                                                        from: fromAirport,
+                                                        to: toAirport,
+                                                        date: startDate,
+                                                        returnDate: flightType === 'return' ? endDate : undefined,
+                                                        adults: travelers.adults,
+                                                        children: travelers.children
+                                                    })
+                                                });
+                                                const data = await res.json();
+                                                setFlights(data.direct_flights || []);
+                                            } catch (e) {
+                                                console.error("Flight search failed", e);
+                                            } finally {
+                                                setSearchingFlights(false);
+                                            }
+                                        }}
+                                        disabled={!fromAirport || !toAirport || searchingFlights}
+                                        className="w-full h-12 font-black uppercase tracking-widest"
+                                    >
+                                        {searchingFlights ? "Searching..." : "Search Flights"}
+                                    </Button>
+
+                                    <div className="space-y-3 max-h-[250px] overflow-y-auto pr-2">
+                                        {flights.length > 0 ? (
+                                            flights.map((f, i) => (
+                                                <div
+                                                    key={i}
+                                                    onClick={() => setSelectedFlight(f)}
+                                                    className={cn(
+                                                        "p-4 border-2 rounded-lg cursor-pointer transition-all flex items-center justify-between group",
+                                                        selectedFlight === f ? "border-primary bg-primary/5" : "border-gray-100 hover:border-gray-200"
+                                                    )}
+                                                >
+                                                    <div className="flex items-center gap-4">
+                                                        <div className="h-10 w-10 rounded bg-gray-50 flex items-center justify-center font-bold text-[10px] text-gray-400 border border-gray-100 group-hover:bg-white transition-colors">
+                                                            {f.name?.[0] || 'A'}
+                                                        </div>
+                                                        <div>
+                                                            <p className="text-sm font-black text-gray-900">{f.name}</p>
+                                                            <p className="text-[10px] font-bold text-gray-500 uppercase">{f.departure} → {f.arrival}</p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="text-right">
+                                                        <p className="text-lg font-black text-primary">{f.price}</p>
+                                                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-tighter">{f.duration}</p>
+                                                    </div>
+                                                </div>
+                                            ))
+                                        ) : !searchingFlights && (
+                                            <div className="h-32 flex flex-col items-center justify-center text-gray-400 border-2 border-dashed border-gray-100 rounded-lg">
+                                                <Plane className="h-8 w-8 mb-2 opacity-20" />
+                                                <p className="text-xs font-bold uppercase tracking-widest">
+                                                    {hasSearchedFlights ? "No flights found for this route" : "Enter route to search"}
+                                                </p>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Wizard Footer */}
+                        <div className="px-8 py-6 bg-gray-50 flex items-center justify-between border-t-2 border-gray-100">
+                            {wizardStep > 1 && (
+                                <Button
+                                    variant="ghost"
+                                    onClick={() => setWizardStep(s => s - 1)}
+                                    className="font-black text-xs uppercase tracking-widest text-gray-500 hover:text-gray-900"
+                                >
+                                    <ArrowLeft className="h-4 w-4 mr-2" /> Back
+                                </Button>
+                            )}
+                            <div className="ml-auto">
+                                {wizardStep < 4 ? (
+                                    <Button
+                                        disabled={(wizardStep === 1 && !destination) || (wizardStep === 2 && (!startDate || (flightType === 'return' && !endDate)))}
+                                        onClick={() => setWizardStep(s => s + 1)}
+                                        className="h-12 px-8 font-black uppercase tracking-widest gap-2"
+                                    >
+                                        Next <ArrowRight className="h-4 w-4" />
+                                    </Button>
+                                ) : (
+                                    <Button
+                                        onClick={async () => {
+                                            if (creatingTrip) return;
+                                            setCreatingTrip(true);
+                                            setWizardError(null);
+                                            try {
+                                                const { data: room, error: roomErr } = await supabase
+                                                    .from('rooms')
+                                                    .insert({
+                                                        name: destination,
+                                                        created_by: user!.sub
+                                                    })
+                                                    .select()
+                                                    .single();
+
+                                                if (roomErr) throw roomErr;
+                                                if (!room) throw new Error("Failed to create room");
+
+                                                // Create ownership immediately! (Bypass schema errors)
+                                                try {
+                                                    await supabase.from('room_members').insert({
+                                                        room_id: room.id,
+                                                        user_id: user!.sub,
+                                                        role: 'owner',
+                                                        can_prompt_ai: true
+                                                    });
+                                                } catch (e) {
+                                                    console.warn("[Dashboard] room_members insertion skipped due to schema issues:", e);
+                                                }
+
+                                                // Pre-initialize room_state
+                                                await supabase.from('room_state').insert({
+                                                    room_id: room.id,
+                                                    ai_status: 'idle'
+                                                });
+
+                                                // Insert initial message with flight data
+                                                if (selectedFlight) {
+                                                    const priceStr = (selectedFlight.price || "0").replace(/[^0-9]/g, '');
+                                                    const price = parseInt(priceStr) || 0;
+
+                                                    const flightCard = {
+                                                        id: `flight_${Date.now()}`,
+                                                        type: "transport",
+                                                        layer: "transport",
+                                                        day: 1,
+                                                        name: `Flight to ${destination}`,
+                                                        position: { lat: 0, lng: 0 }, // Will be fixed by AI later
+                                                        data: {
+                                                            mode: "flight",
+                                                            price: price,
+                                                            description: `${selectedFlight.name}: ${selectedFlight.departure} - ${selectedFlight.arrival}`,
+                                                            startTime: selectedFlight.departure,
+                                                            endTime: selectedFlight.arrival,
+                                                            bookingUrl: selectedFlight.booking_url,
+                                                            from: { name: fromAirport },
+                                                            to: { name: toAirport }
+                                                        }
+                                                    };
+
+                                                    const tripData = {
+                                                        title: `${destination} Trip`,
+                                                        destination: destination,
+                                                        startDate,
+                                                        endDate,
+                                                        days: Math.ceil((new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24)) || 1,
+                                                        summary: { estimatedBudget: 2500, budgetUsed: price },
+                                                        cards: [flightCard]
+                                                    };
+
+                                                    await supabase.from('messages').insert({
+                                                        room_id: room.id,
+                                                        content: `__TRIP_DATA__:${JSON.stringify(tripData)}`,
+                                                        is_ai: true
+                                                    });
+
+                                                    await supabase.from('messages').insert({
+                                                        room_id: room.id,
+                                                        content: `Success! I've started your trip to ${destination} with the selected flight. Mention @Adealy to continue planning your itinerary.`,
+                                                        is_ai: true
+                                                    });
+
+                                                    // [AUTO-PLANNING] Trigger Gemini immediately
+                                                    const autoPrompt = `@Adealy I've just started my journey to ${destination}! Please architect a full ${tripData.days}-day itinerary for me, including stays, local transit, and daily hidden gems/activities. Use the flight I picked as the starting point!`;
+
+                                                    // 1. Insert User Message
+                                                    await supabase.from('messages').insert({
+                                                        room_id: room.id,
+                                                        sender_id: user!.sub,
+                                                        content: autoPrompt,
+                                                        is_ai: false
+                                                    });
+
+                                                    // 2. Trigger API (Fire and forget, we are redirecting anyway)
+                                                    fetch('/api/chat', {
+                                                        method: 'POST',
+                                                        headers: { 'Content-Type': 'application/json' },
+                                                        body: JSON.stringify({
+                                                            room_id: room.id,
+                                                            prompt: autoPrompt,
+                                                            auth0_id: user!.sub
+                                                        })
+                                                    }).catch(err => console.error("Auto-planning trigger failed:", err));
+                                                }
+
+                                                setLocation(`/planner/${room.id}`);
+                                            } catch (err: any) {
+                                                console.error("Failed to create trip:", err);
+                                                setWizardError(err.message || 'Unknown error');
+                                            } finally {
+                                                setCreatingTrip(false);
+                                            }
+                                        }}
+                                        disabled={!selectedFlight || creatingTrip}
+                                        className="h-12 px-10 font-black uppercase tracking-widest bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
+                                    >
+                                        {creatingTrip ? "Starting..." : "Create Trip"}
+                                    </Button>
+                                )}
+                            </div>
+                        </div>
+
+                        {wizardError && (
+                            <div className="bg-red-50 border-t-2 border-red-100 px-8 py-4 flex items-center justify-between gap-4">
+                                <p className="text-xs font-bold text-red-600 uppercase tracking-wider">
+                                    Error: {wizardError}
+                                </p>
+                                <button onClick={() => setWizardError(null)} className="text-red-400 hover:text-red-600 font-black text-xs uppercase">
+                                    Dismiss
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

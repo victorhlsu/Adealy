@@ -126,7 +126,7 @@ const searchFlights = async (req, res) => {
 function spawnPythonWorker(query) {
 	return new Promise((resolve) => {
 		const workerPath = path.join(__dirname, '../../flights_worker.py');
-		const python = spawn('python', [workerPath]);
+		const python = spawn('python3', [workerPath]);
 
 		let stdout = '';
 		let stderr = '';

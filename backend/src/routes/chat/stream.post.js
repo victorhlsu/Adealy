@@ -1,8 +1,8 @@
-const { GoogleGenAI } = require('@google/genai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { supabase } = require('../../supabase/client');
 // Environment variables are loaded in server.js
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const systemInstruction = `You are a travel planning assistant called Adealy. 
 Your goal is to provide a comprehensive response to the user's travel request.
@@ -163,16 +163,19 @@ async function handler(req, res) {
     }, 3000);
 
     try {
-        const result = await ai.models.generateContent({
+        const model = genAI.getGenerativeModel({
             model: 'gemini-1.5-flash',
+            systemInstruction: systemInstruction + `\n\nIMPORTANT: The current date is ${new Date().toISOString().split('T')[0]}. All plans, recommendations, and trips MUST use dates in the future relative to this current date unless the user explicitly requests otherwise.`
+        });
+
+        const result = await model.generateContent({
             contents: contents,
-            config: {
-                systemInstruction: systemInstruction + `\n\nIMPORTANT: The current date is ${new Date().toISOString().split('T')[0]}. All plans, recommendations, and trips MUST use dates in the future relative to this current date unless the user explicitly requests otherwise.`,
+            generationConfig: {
                 temperature: 0.7,
                 responseMimeType: "application/json"
             }
         });
-        geminiResponseText = result.text;
+        geminiResponseText = result.response.text();
     } catch (e) {
         console.error("Gemini Generation Error:", e);
         sendEvent({ type: 'complete', message: "Sorry, I had an error talking to Gemini.", trip: null });

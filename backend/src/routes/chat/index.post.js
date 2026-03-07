@@ -1,10 +1,10 @@
-const { GoogleGenAI } = require('@google/genai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { supabase } = require('../../supabase/client');
 const dotenv = require('dotenv');
 const path = require('path');
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const systemInstruction = `You are a travel planning assistant called Adealy. 
 Your goal is to provide a comprehensive response to the user's travel request.
@@ -125,11 +125,10 @@ async function handler(req, res) {
 
         // Optional: Implement cooldown logic here if needed
 
-        // 2. Update room state to reflect active prompt
+        // 2. Update room state
         await supabase
             .from('room_state')
             .update({
-                last_prompted_at: new Date().toISOString(),
                 last_prompted_by: auth0_id,
                 ai_status: 'thinking'
             })
@@ -150,10 +149,31 @@ async function handler(req, res) {
         }
 
         // 4. Generate AI response
-        const contents = (messages || []).map(m => ({
-            role: m.is_ai ? 'model' : 'user',
-            parts: [{ text: m.content }]
-        }));
+        // Gemini strictly requires alternating roles starting with 'user'
+        let formattedContents = [];
+        for (const m of (messages || [])) {
+            const role = m.is_ai ? 'model' : 'user';
+
+            if (formattedContents.length === 0) {
+                if (role === 'model') {
+                    // Force the first message to be user to satisfy Gemini
+                    formattedContents.push({ role: 'user', parts: [{ text: "[System Context: " + m.content + "]" }] });
+                } else {
+                    formattedContents.push({ role, parts: [{ text: m.content }] });
+                }
+                continue;
+            }
+
+            const lastItem = formattedContents[formattedContents.length - 1];
+            if (lastItem.role === role) {
+                // Merge consecutive messages of the same role
+                lastItem.parts[0].text += "\\n\\n" + m.content;
+            } else {
+                formattedContents.push({ role, parts: [{ text: m.content }] });
+            }
+        }
+
+        const contents = formattedContents.length > 0 ? formattedContents : [{ role: 'user', parts: [{ text: prompt }] }];
 
         let userName = 'Traveler';
         try {
@@ -168,18 +188,21 @@ async function handler(req, res) {
         const dynamicSystemInstruction = systemInstruction + `\n\n-----------------\nYou are currently responding to a user named ${userName}. ALWAYS greet them personally by this name when introducing a plan or responding to an initial request!`;
 
         console.log('Calling Gemini API for user:', userName);
-        const result = await ai.models.generateContent({
+        const model = genAI.getGenerativeModel({
             model: 'gemini-2.5-flash',
+            systemInstruction: dynamicSystemInstruction
+        });
+
+        const result = await model.generateContent({
             contents: contents,
-            config: {
-                systemInstruction: dynamicSystemInstruction,
+            generationConfig: {
                 temperature: 0.7,
                 responseMimeType: "application/json"
             }
         });
         console.log('Gemini API response received.');
 
-        const geminiResponseText = result.text;
+        const geminiResponseText = result.response.text();
 
         // Ensure parsing works
         let finalMessage = "I processed your request, but couldn't format it right.";
@@ -210,25 +233,15 @@ async function handler(req, res) {
             });
         }
 
-        // 4. Set state to cooldown
+        // 4. Set state to idle (or cooldown)
         await supabase.from('room_state').update({
-            ai_status: 'cooldown',
-            updated_at: new Date().toISOString()
+            ai_status: 'idle' // simpler than cooldown if we don't have updated_at
         }).eq('room_id', room_id);
-
-        // 5. Release Cooldown after 5 seconds
-        setTimeout(async () => {
-            await supabase.from('room_state').update({
-                ai_status: 'idle',
-                updated_at: new Date().toISOString()
-            }).eq('room_id', room_id);
-        }, 5000);
 
     } catch (error) {
         console.error("Error in AI pipeline:", error);
         await supabase.from('room_state').update({
-            ai_status: 'idle',
-            updated_at: new Date().toISOString()
+            ai_status: 'idle'
         }).eq('room_id', room_id);
     }
 }

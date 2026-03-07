@@ -11,22 +11,25 @@ import {
   Plus,
   Zap,
   LayoutGrid,
-  CreditCard,
-  Train,
-  BedDouble,
-  Camera,
-  Send,
-  ShoppingBag,
-  ArrowRight,
-  Footprints,
-  Car,
-  Bike,
   Mail,
   Users,
   Lock,
   User as UserIcon,
   UserPlus,
-  ExternalLink
+  ExternalLink,
+  CheckCircle2,
+  Clock,
+  BedDouble,
+  Camera,
+  Train,
+  CreditCard,
+  ArrowRight,
+  Footprints,
+  Car,
+  Bike,
+  Send,
+  ShoppingBag,
+  Check
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
@@ -44,7 +47,8 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   const [, setLocation] = useLocation();
 
   const [prompt, setPrompt] = useState("");
-  const [aiStatus, setAiStatus] = useState<'idle' | 'thinking' | 'cooldown'>('idle');
+  const [aiStatus, setAiStatus] = useState<'idle' | 'thinking' | 'cooldown' | 'payment' | 'booking' | 'booked'>('idle');
+  const [streamStatus, setStreamStatus] = useState<{ step: number, total: number, message: string } | null>(null);
   const [aiPromptedBy, setAiPromptedBy] = useState<string | null>(null);
   const [members, setMembers] = useState<any[]>([]);
   const [isOwner, setIsOwner] = useState(false);
@@ -56,6 +60,9 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   const [isInviting, setIsInviting] = useState(false);
   const [inviteMessage, setInviteMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showInviteModal, setShowInviteModal] = useState(false);
+  const [showCheckoutModal, setShowCheckoutModal] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+
   const [trip, setTrip] = useState<Trip | null>(null);
   const [cards, setCards] = useState<TripCard[]>([]);
   const [cart, setCart] = useState<TripCard[]>([]);
@@ -65,27 +72,27 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   const { user, isAuthenticated } = useAuth0();
   useEffect(() => {
     if (user?.sub) {
-        supabase.from('user_profiles').select('*').eq('auth0_id', user.sub).single().then(({data}) => {
-            if (data) setProfileData(data);
-        });
+      supabase.from('user_profiles').select('*').eq('auth0_id', user.sub).single().then(({ data }) => {
+        if (data) setProfileData(data);
+      });
     }
   }, [user?.sub]);
 
   const userVisaRequirement = useMemo(() => {
-      if (!trip?.destination || !profileData?.passport_country) return null;
-      
-      const pass = profileData.passport_country.toLowerCase();
-      const dest = trip.destination.toLowerCase();
-      
-      if (['usa', 'can', 'gbr', 'aus'].includes(pass)) {
-          if (dest.includes('france') || dest.includes('germany') || dest.includes('japan')) return 'visa-free';
-      }
-      if (pass === 'ind') {
-         if (dest.includes('usa') || dest.includes('uk') || dest.includes('canada')) return 'visa-required';
-         if (dest.includes('thailand') || dest.includes('indonesia')) return 'visa-on-arrival';
-      }
-      
-      return trip?.visaRequirement || 'unknown';
+    if (!trip?.destination || !profileData?.passport_country) return null;
+
+    const pass = profileData.passport_country.toLowerCase();
+    const dest = trip.destination.toLowerCase();
+
+    if (['usa', 'can', 'gbr', 'aus'].includes(pass)) {
+      if (dest.includes('france') || dest.includes('germany') || dest.includes('japan')) return 'visa-free';
+    }
+    if (pass === 'ind') {
+      if (dest.includes('usa') || dest.includes('uk') || dest.includes('canada')) return 'visa-required';
+      if (dest.includes('thailand') || dest.includes('indonesia')) return 'visa-on-arrival';
+    }
+
+    return trip?.visaRequirement || 'unknown';
   }, [profileData?.passport_country, trip]);
 
   useEffect(() => {
@@ -105,18 +112,14 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   }, [isAuthenticated, user]);
 
   useEffect(() => {
-    if (!roomId && user?.sub) {
-      supabase.from('rooms').insert({ name: 'New Trip', created_by: user.sub }).select().single().then(({ data }: any) => {
-        if (data) {
-          setLocation(`/planner/${data.id}`);
-        }
-      });
+    if (!roomId) {
+      setLocation("/dashboard");
     }
-  }, [roomId, user?.sub, setLocation]);
+  }, [roomId, setLocation]);
 
   // UI State
   const [viewMode, setViewMode] = useState<'map' | 'timeline'>('map');
-  const [activeTab, setActiveTab] = useState<'design' | 'saved' | 'config'>('design');
+  const [activeTab, setActiveTab] = useState<'design' | 'saved' | 'purchasing' | 'config'>('design');
   const [selectedDay, setSelectedDay] = useState<number>(0);
   const [activeLayer, setActiveLayer] = useState<'all' | 'stay' | 'activity' | 'transport'>('all');
   const [focusedCardId, setFocusedCardId] = useState<string | null>(null);
@@ -173,44 +176,86 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
     let channel: any;
 
     const initRoom = async () => {
-      // 1. Load members FIRST to check access — join with user_profiles to get emails
-      const { data: memData } = await supabase
-        .from('room_members')
-        .select('*, user_profiles(email, first_name, last_name)')
-        .eq('room_id', roomId);
+      console.log("[Planner] Initializing room:", roomId);
 
-      if (memData && memData.length > 0) {
-        const me = memData.find((m: any) => m.user_id === user.sub);
-        if (!me) {
-          // If room has members but user isn't one, deny access
-          setAccessDenied(true);
-          return;
+      // 1. Fetch Room Details FIRST
+      const { data: rData, error: rError } = await supabase
+        .from('rooms')
+        .select('*')
+        .eq('id', roomId)
+        .single();
+
+      if (rError || !rData) {
+        console.error("[Planner] Room fetch failed:", rError);
+        setAccessDenied(true);
+        return;
+      }
+
+      setRoomName(rData.name);
+      const isCreator = rData.created_by === user.sub;
+      console.log("[Planner] Room data loaded. Is creator:", isCreator);
+
+      // 2. Load Members with Retry
+      let retryCount = 0;
+      const maxRetries = 3;
+      let memData: any[] | null = null;
+      let me: any = null;
+
+      while (retryCount < maxRetries) {
+        const { data, error } = await supabase
+          .from('room_members')
+          .select('id, room_id, user_id, role, can_prompt_ai, user_profiles(email, first_name, last_name)')
+          .eq('room_id', roomId);
+
+        if (error && error.code === 'PGRST204') {
+          console.warn("[Planner] Schema error detected (PGRST204). Proceeding with Creator fallback.");
+          break; // Exit loop and use creator status
         }
-        setMembers(memData);
-        if (me.role === 'owner') setIsOwner(true);
-      } else {
-        // If no members exist yet, the user is likely the creator arriving for the first time
-        // Let's create their owner membership record
-        const { error } = await supabase.from('room_members').insert({
+
+        me = data?.find((m: any) => m.user_id === user.sub);
+        if (me) {
+          memData = data;
+          break;
+        }
+
+        console.log(`[Planner] Member not found, retry ${retryCount + 1}/${maxRetries}`);
+        retryCount++;
+        if (retryCount < maxRetries) {
+          await new Promise(r => setTimeout(r, 800));
+        }
+      }
+
+      // 3. Permission Consolidation
+      if (me) {
+        setMembers(memData || []);
+        if (me.role === 'owner' || isCreator) setIsOwner(true);
+      } else if (isCreator) {
+        // If I'm the creator but not in members, try one-time auto-join
+        console.log("[Planner] Creator not in members, attempting auto-join...");
+        const { error: joinErr } = await supabase.from('room_members').insert({
           room_id: roomId,
           user_id: user.sub,
           role: 'owner',
           can_prompt_ai: true
         });
 
-        if (error) {
-          console.error("Failed to auto-join room:", error);
-          setAccessDenied(true);
-          return;
+        if (joinErr && joinErr.code !== '23505' && joinErr.code !== 'PGRST204') {
+          console.error("[Planner] Auto-join failed:", joinErr);
         }
 
         setIsOwner(true);
-        setMembers([{ user_id: user.sub, role: 'owner', can_prompt_ai: true }]);
+        // Final member refresh
+        const { data: finalMems } = await supabase
+          .from('room_members')
+          .select('id, room_id, user_id, role, can_prompt_ai, user_profiles(email, first_name, last_name)')
+          .eq('room_id', roomId);
+        if (finalMems) setMembers(finalMems);
+      } else {
+        // Not creator and not a member
+        console.warn("[Planner] Access denied: User is not creator and not a member.");
+        setAccessDenied(true);
+        return;
       }
-
-      // 2. Load room details
-      const { data: rData } = await supabase.from('rooms').select('*').eq('id', roomId).single();
-      if (rData) setRoomName(rData.name);
 
       // 3. Load history
       const { data: history } = await supabase.from('messages').select('*').eq('room_id', roomId).order('created_at', { ascending: true });
@@ -259,11 +304,21 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'room_state', filter: `room_id=eq.${roomId}` }, (payload: any) => {
           const newState = payload.new;
           setAiStatus(newState.ai_status || 'idle');
+          if (newState.ai_status === 'booked') {
+            setMessages(prev => {
+              if (prev.some(m => m.content === "✨ **Booking Confirmed!** Your journey is now finalized.")) return prev;
+              return [...prev, { is_ai: true, content: "✨ **Booking Confirmed!** Your journey is now finalized. This trip is now archived and view-only." }];
+            });
+          }
           setAiPromptedBy(newState.last_prompted_by || null);
           if (newState.focused_view) setViewMode(newState.focused_view as any);
         })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'room_members', filter: `room_id=eq.${roomId}` }, () => {
-          supabase.from('room_members').select('*, user_profiles(email, first_name, last_name)').eq('room_id', roomId).then(({ data }: any) => {
+          supabase.from('room_members').select('id, room_id, user_id, role, can_prompt_ai, user_profiles(email, first_name, last_name)').eq('room_id', roomId).then(({ data, error }: any) => {
+            if (error) {
+              console.warn("[Planner] Realtime member update failed (schema error).");
+              return;
+            }
             if (data) {
               setMembers(data);
               const me = data.find((m: any) => m.user_id === user.sub);
@@ -276,6 +331,41 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
     initRoom();
     return () => { if (channel) supabase.removeChannel(channel); }
   }, [roomId, user?.sub]);
+
+  useEffect(() => {
+    let isActive = true;
+    if (aiStatus === 'thinking' || aiStatus === 'booking') {
+      const runAnimation = async () => {
+        try {
+          const { mockStreamGenerator } = await import('@/services/mock-trip-service');
+          // For booking, we use a different prompt to simulate booking steps
+          const animationPrompt = aiStatus === 'booking' ? "BOOKING_FLOW" : "Plan a trip";
+
+          for await (const chunk of mockStreamGenerator(animationPrompt)) {
+            if (!isActive) break;
+            if (chunk.type === 'progress') {
+              setStreamStatus({
+                step: chunk.step,
+                total: chunk.totalSteps,
+                message: aiStatus === 'booking' ? `AI is booking: ${chunk.message}...` : chunk.message
+              });
+            }
+          }
+
+          // If we was booking and we are the owner/initiator, transition to 'booked'
+          if (isActive && aiStatus === 'booking' && aiPromptedBy === user?.sub) {
+            await supabase.from('room_state').update({ ai_status: 'booked' }).eq('room_id', roomId);
+          }
+        } catch (err) {
+          console.warn("Animation stream failed", err);
+        }
+      };
+      runAnimation();
+    } else {
+      setStreamStatus(null);
+    }
+    return () => { isActive = false; };
+  }, [aiStatus, aiPromptedBy, user?.sub, roomId]);
 
   const handleGenerate = async () => {
     if (!prompt.trim() || aiStatus !== 'idle') return;
@@ -292,6 +382,12 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
     if (error) console.error("Failed to save message:", error);
 
     if (currentPrompt.toLowerCase().includes('@adealy')) {
+      // Broadcast thinking state to everyone
+      supabase.from('room_state').update({
+        ai_status: 'thinking',
+        last_prompted_by: user?.sub
+      }).eq('room_id', roomId).then();
+
       setAiStatus('thinking');
       setAiPromptedBy(user?.sub || null);
 
@@ -306,18 +402,18 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 
   const handleSaveRoomName = async () => {
     if (!editedName.trim() || !roomId || !isOwner) {
-       setIsEditingName(false);
-       return;
+      setIsEditingName(false);
+      return;
     }
-    
+
     // Optimistic update
     setRoomName(editedName);
     setIsEditingName(false);
-    
+
     // Only update room name in DB
     const { error } = await supabase.from('rooms').update({ name: editedName }).eq('id', roomId);
     if (error) {
-       console.error("Failed to update room name:", error);
+      console.error("Failed to update room name:", error);
     }
   };
 
@@ -346,6 +442,78 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
     }
   };
 
+  // Polling for members while modal is open to ensure status updates are seen
+  useEffect(() => {
+    if (!showCheckoutModal || !roomId) return;
+
+    const fetchMembers = () => {
+      supabase.from('room_members')
+        .select('id, room_id, user_id, role, can_prompt_ai, user_profiles(email, first_name, last_name)')
+        .eq('room_id', roomId)
+        .then(({ data }) => {
+          if (data) setMembers(data);
+        });
+    };
+
+    const interval = setInterval(fetchMembers, 5000);
+    fetchMembers(); // Initial fetch
+
+    return () => clearInterval(interval);
+  }, [showCheckoutModal, roomId]);
+
+  const handleCheckout = async () => {
+    if (!roomId || !user?.sub) return;
+    setPaymentError(null);
+
+    // Optimistic update
+    setAiStatus('payment');
+
+    // Broadcast "payment" state to everyone
+    const { error } = await supabase.from('room_state').update({
+      ai_status: 'payment',
+      last_prompted_by: user.sub
+    }).eq('room_id', roomId);
+
+    if (error) {
+      console.error("Failed to start checkout:", error);
+      setPaymentError(`Could not start checkout: ${error.message || 'Unknown error'}`);
+      setAiStatus('idle');
+    }
+  };
+
+
+  const handlePay = async () => {
+    if (!roomId || !user?.sub) return;
+    setPaymentError(null);
+
+    // 1. Update our membership status
+    const { error: memError } = await supabase
+      .from('room_members')
+      .update({ role: 'owner' }) // Just a dummy update since column is missing
+      .eq('room_id', roomId)
+      .eq('user_id', user.sub);
+
+    if (memError) {
+      console.error("Failed to update payment status:", memError);
+      setPaymentError(`Payment update failed: ${memError.message || 'Unknown error'}`);
+      return;
+    }
+
+    // 2. Refresh members locally
+    const { data: refreshedMembers } = await supabase
+      .from('room_members')
+      .select('id, room_id, user_id, role, can_prompt_ai, user_profiles(email, first_name, last_name)')
+      .eq('room_id', roomId);
+    if (refreshedMembers) setMembers(refreshedMembers);
+
+    // 3. Broadcast to others (triggers room_state update)
+    await supabase.from('room_state').update({
+      ai_status: 'payment'
+    }).eq('room_id', roomId);
+  };
+
+
+
   const handleAddToCart = (card: TripCard) => {
     if (!cart.find(c => c.id === card.id)) {
       setCart([...cart, card]);
@@ -361,6 +529,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+
   // Derived state
   const safeCards = Array.isArray(cards) ? cards : [];
   const displayedCards = safeCards.filter(c => {
@@ -374,6 +543,22 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   const estimatedBudget = trip?.summary?.estimatedBudget || (calculatedBudgetUsed > 0 ? Math.ceil(calculatedBudgetUsed * 1.2 / 500) * 500 : 2500);
   const budgetProgress = estimatedBudget > 0 ? Math.min((calculatedBudgetUsed / estimatedBudget) * 100, 100) : 0;
 
+  const someOnePaid = false; // Mocked until schema is fixed
+  const allPaid = false;
+  const splitTotal = members.length > 0 ? Math.round(calculatedBudgetUsed / members.length) : calculatedBudgetUsed;
+  const myMember = members.find(m => m.user_id === user?.sub);
+
+  // Auto-transition to booking if everyone paid
+  useEffect(() => {
+    if (aiStatus === 'payment' && allPaid && (isOwner || (members.length > 0 && members[0]?.user_id === user?.sub))) {
+      supabase.from('room_state').update({
+        ai_status: 'booking',
+        last_prompted_by: user?.sub
+      }).eq('room_id', roomId).then();
+    }
+  }, [allPaid, aiStatus, isOwner, members, user, roomId]);
+
+
   // Layer Subtotals
   const stayCards = safeCards.filter(c => c?.type === 'stay');
   const stayCost = stayCards.reduce((sum, c) => sum + (c?.data?.price || 0), 0);
@@ -381,6 +566,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   const activityCost = activityCards.reduce((sum, c) => sum + (c?.data?.price || 0), 0);
   const transportCards = safeCards.filter(c => c?.type === 'transport');
   const transportCost = transportCards.reduce((sum, c) => sum + (c?.data?.price || 0), 0);
+
 
   // Access Denied Screen
   if (accessDenied) {
@@ -395,13 +581,12 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   }
 
 
-
   return (
     <div className="h-screen w-screen bg-background text-foreground flex overflow-hidden font-sans">
 
       {/* 1. Left Sidebar - Layers & Overview */}
       <aside className="w-[280px] bg-sidebar border-r border-sidebar-border flex flex-col shrink-0 z-20">
-        <div 
+        <div
           className="p-4 border-b border-sidebar-border flex items-center justify-between cursor-pointer hover:bg-sidebar-accent/50 transition-colors group"
           onClick={() => setLocation("/dashboard")}
         >
@@ -427,10 +612,10 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 
             <div className="space-y-1">
               <LayerItem icon={LayoutGrid} label="Itinerary" value={`${trip?.days || 0} days`} active={activeLayer === 'all'} onClick={() => setActiveLayer('all')} />
-              <LayerItem icon={BedDouble} label="Stays" value={stayCost === 0 ? "Free" : `${stayCards.length} • $${stayCost}`} color="text-orange-400" active={activeLayer === 'stay'} onClick={() => setActiveLayer('stay')} />
-              <LayerItem icon={Camera} label="Activities" value={activityCost === 0 ? "Free" : `${activityCards.length} • $${activityCost}`} color="text-blue-400" active={activeLayer === 'activity'} onClick={() => setActiveLayer('activity')} />
-              <LayerItem icon={Train} label="Transport" value={transportCost === 0 ? "Free" : `${transportCards.length} • $${transportCost}`} color="text-emerald-400" active={activeLayer === 'transport'} onClick={() => setActiveLayer('transport')} />
-              <LayerItem icon={CreditCard} label="Total Cost" value={calculatedBudgetUsed === 0 ? "Free" : `$${calculatedBudgetUsed}`} color="text-purple-400" />
+              <LayerItem icon={BedDouble} label="Stays" value={stayCost === 0 ? "Free" : `${stayCards.length} • $${stayCost} `} color="text-orange-400" active={activeLayer === 'stay'} onClick={() => setActiveLayer('stay')} />
+              <LayerItem icon={Camera} label="Activities" value={activityCost === 0 ? "Free" : `${activityCards.length} • $${activityCost} `} color="text-blue-400" active={activeLayer === 'activity'} onClick={() => setActiveLayer('activity')} />
+              <LayerItem icon={Train} label="Transport" value={transportCost === 0 ? "Free" : `${transportCards.length} • $${transportCost} `} color="text-emerald-400" active={activeLayer === 'transport'} onClick={() => setActiveLayer('transport')} />
+              <LayerItem icon={CreditCard} label="Total Cost" value={calculatedBudgetUsed === 0 ? "Free" : `$${calculatedBudgetUsed} `} color="text-purple-400" />
             </div>
           </div>
 
@@ -440,6 +625,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
               <div className="flex items-center justify-between mb-3 px-2">
                 <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Trip Overview</h3>
               </div>
+
               <div className="space-y-1">
                 <button
                   className={cn(
@@ -449,7 +635,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                   onClick={() => setSelectedDay(0)}
                 >
                   <span className="font-medium">All Days</span>
-                  <span className="text-xs font-bold opacity-80">{calculatedBudgetUsed === 0 ? "Free" : `$${calculatedBudgetUsed}`}</span>
+                  <span className="text-xs font-bold opacity-80">{calculatedBudgetUsed === 0 ? "Free" : `$${calculatedBudgetUsed} `}</span>
                 </button>
                 {Array.from({ length: trip.days }).map((_, i) => {
                   const dayNum = i + 1;
@@ -469,7 +655,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                           <span className="font-medium">Day {dayNum}</span>
                           <span className="text-[10px] opacity-70">{trip?.destination?.split(',')[0] || "City"}</span>
                         </div>
-                        <span className="text-xs font-bold opacity-80">{dayCost === 0 ? "Free" : `$${dayCost}`}</span>
+                        <span className="text-xs font-bold opacity-80">{dayCost === 0 ? "Free" : `$${dayCost} `}</span>
                       </button>
 
                       <AnimatePresence>
@@ -511,7 +697,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                                       </span>
                                       <span className="text-[10px] text-muted-foreground block truncate">
                                         {card.type === 'transport' && (card.data.mode && card.data.mode.charAt(0).toUpperCase() + card.data.mode.slice(1) + " • ")}
-                                        {card.data.price === 0 ? "Free" : `$${card.data.price || 0}`}
+                                        {card.data.price === 0 ? "Free" : `$${card.data.price || 0} `}
                                       </span>
                                     </div>
                                   </div>
@@ -539,7 +725,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
             )}
             <div className="flex-1 overflow-hidden">
               <p className="text-sm font-medium truncate group-hover:text-primary transition-colors">
-                {profileData?.first_name ? `${profileData.first_name} ${profileData.last_name || ''}` : user?.name || "Guest"}
+                {profileData?.first_name ? `${profileData.first_name} ${profileData.last_name || ''} ` : user?.name || "Guest"}
               </p>
               <p className="text-xs text-muted-foreground truncate">
                 {profileData?.passport_country ? `${profileData.passport_country} Passport` : "Complete Profile"}
@@ -559,30 +745,36 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
               {isEditingName ? (
-                 <input 
-                    type="text"
-                    value={editedName}
-                    onChange={e => setEditedName(e.target.value)}
-                    onBlur={handleSaveRoomName}
-                    onKeyDown={e => e.key === 'Enter' && handleSaveRoomName()}
-                    autoFocus
-                    className="font-bold text-sm tracking-wide bg-transparent border-b border-primary outline-none px-1 py-0.5 min-w-[150px]"
-                 />
+                <input
+                  type="text"
+                  value={editedName}
+                  onChange={e => setEditedName(e.target.value)}
+                  onBlur={handleSaveRoomName}
+                  onKeyDown={e => e.key === 'Enter' && handleSaveRoomName()}
+                  autoFocus
+                  className="font-bold text-sm tracking-wide bg-transparent border-b border-primary outline-none px-1 py-0.5 min-w-[150px]"
+                />
               ) : (
-                 <h1 
-                    className={cn("font-bold text-sm tracking-wide", isOwner ? "cursor-pointer hover:text-primary transition-colors" : "")}
-                    onClick={() => {
-                        if (isOwner) {
-                            setEditedName(roomName);
-                            setIsEditingName(true);
-                        }
-                    }}
-                    title={isOwner ? "Click to edit trip name" : ""}
-                 >
-                    {roomName}
-                 </h1>
+                <h1
+                  className={cn("font-bold text-sm tracking-wide", (isOwner && aiStatus !== 'booked') ? "cursor-pointer hover:text-primary transition-colors" : "")}
+                  onClick={() => {
+                    if (isOwner && aiStatus !== 'booked') {
+                      setEditedName(roomName);
+                      setIsEditingName(true);
+                    }
+                  }}
+                  title={isOwner && aiStatus !== 'booked' ? "Click to edit trip name" : ""}
+                >
+                  {roomName}
+                </h1>
               )}
-              <Badge variant="secondary" className="bg-muted text-muted-foreground border-0 text-[10px] px-1.5 h-5">LIVE</Badge>
+              {aiStatus === 'booked' ? (
+                <Badge variant="outline" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 text-[10px] px-1.5 h-5 font-bold uppercase tracking-wider">Paid & Ready</Badge>
+              ) : aiStatus === 'payment' ? (
+                <Badge variant="outline" className="bg-amber-500/10 text-amber-500 border-amber-500/20 text-[10px] px-1.5 h-5 font-bold uppercase tracking-wider">Payment in progress</Badge>
+              ) : (
+                <Badge variant="secondary" className="bg-muted text-muted-foreground border-0 text-[10px] px-1.5 h-5">LIVE</Badge>
+              )}
               {trip?.visaRequirement && (
                 <div title={trip.visaDetails}>
                   <Badge
@@ -666,20 +858,32 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                 <span className="text-muted-foreground"> / ${estimatedBudget}</span>
               </div>
               <div className="w-20 h-1.5 bg-background rounded-full overflow-hidden">
-                <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${budgetProgress}%` }} />
+                <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${budgetProgress}% ` }} />
               </div>
             </div>
 
             <ModeToggle />
 
-            <Button
-              onClick={() => { setShowInviteModal(true); setInviteMessage(null); }}
-              size="sm"
-              className="bg-primary hover:bg-primary/90 text-primary-foreground h-8 text-xs gap-2"
-            >
-              <Share2 className="h-3 w-3" /> Invite
-            </Button>
-          </div >
+            {isOwner && aiStatus === 'idle' && (
+              <Button
+                onClick={() => setShowCheckoutModal(true)}
+                size="sm"
+                className="bg-emerald-600 hover:bg-emerald-700 text-white h-8 text-xs gap-2"
+              >
+                <CreditCard className="h-3 w-3" /> Checkout
+              </Button>
+            )}
+
+            {aiStatus !== 'booked' && (
+              <Button
+                onClick={() => { setShowInviteModal(true); setInviteMessage(null); }}
+                size="sm"
+                className="bg-primary hover:bg-primary/90 text-primary-foreground h-8 text-xs gap-2"
+              >
+                <Share2 className="h-3 w-3" /> Invite
+              </Button>
+            )}
+          </div>
         </header >
 
         {/* Invite Modal Overlay */}
@@ -725,14 +929,76 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
           </div>
         )}
 
+        {/* Checkout Modal Overlay */}
+        {showCheckoutModal && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowCheckoutModal(false)}>
+            <div className="bg-sidebar border border-sidebar-border rounded-2xl p-6 w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <CreditCard className="h-5 w-5 text-emerald-500" />
+                  <h2 className="font-bold text-base">Shared Checkout</h2>
+                </div>
+                <button onClick={() => setShowCheckoutModal(false)} className="text-muted-foreground hover:text-foreground text-lg leading-none">&times;</button>
+              </div>
+
+              <div className="bg-muted/50 rounded-xl p-4 mb-4 space-y-2 border border-border/50">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Split among</span>
+                  <span className="font-semibold">{members.length} people</span>
+                </div>
+                <div className="flex justify-between text-xs font-bold pt-1 border-t border-border/20 mt-1">
+                  <span>Your Share</span>
+                  <span className="text-emerald-500 font-serif text-lg">${splitTotal}</span>
+                </div>
+              </div>
+
+              {/* Individual Status */}
+              <div className="space-y-2 mb-6 max-h-40 overflow-y-auto pr-1">
+                <p className="text-[10px] uppercase font-bold text-gray-500 ml-1 mb-1">Payment Status</p>
+                {members.map((m: any) => (
+                  <div key={m.user_id} className="flex items-center justify-between bg-muted/30 p-2 rounded-lg border border-border/10">
+                    <div className="flex items-center gap-2 overflow-hidden">
+                      <div className="h-5 w-5 rounded-full bg-primary/10 flex items-center justify-center text-[10px] font-bold text-primary shrink-0">
+                        {m.user_profiles?.first_name?.[0] || 'U'}
+                      </div>
+                      <span className="text-xs truncate">{m.user_id === user?.sub ? 'You' : m.user_profiles?.first_name || 'Member'}</span>
+                    </div>
+                    <Badge variant="outline" className="bg-amber-500/10 text-amber-500 border-0 text-[10px] gap-1">
+                      <Clock className="h-2.5 w-2.5" /> Pending
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-4 mb-6">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] uppercase font-bold text-gray-500 ml-1">Mock Card Details</label>
+                  <div className="bg-muted border border-border/50 rounded-lg px-3 py-2 flex items-center gap-2 opacity-60">
+                    <CreditCard className="h-3.5 w-3.5 text-muted-foreground" />
+                    <span className="text-xs">4242 •••• •••• 4242</span>
+                  </div>
+                </div>
+              </div>
+
+              <Button onClick={() => setShowCheckoutModal(false)} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-6 rounded-xl shadow-lg shadow-emerald-600/20">
+                Close (Checkout Disabled)
+              </Button>
+
+              <p className="text-[10px] text-center text-muted-foreground mt-4 italic">
+                Booking animation starts after all members pay.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Content View */}
-        < div className="flex-1 relative bg-background pt-14" >
+        <div className="flex-1 relative bg-background pt-14 flex flex-col min-h-0">
           {viewMode === 'map' ? (
             <Map
               ref={mapRef}
               center={[0, 20]} // Default to World View
               zoom={1.5}
-              className="w-full h-full"
+              className="w-full flex-1"
               styles={{
                 dark: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
                 light: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
@@ -786,9 +1052,11 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                       <h4 className="text-sm font-bold text-white mb-1">{card.name}</h4>
                       {card.data.price && <p className="text-xs text-gray-400 mb-2">${card.data.price} per person</p>}
 
-                      <Button size="sm" variant="secondary" className="w-full text-xs h-7 bg-white/10 hover:bg-white/20 text-white" onClick={() => handleAddToCart(card)}>
-                        <Plus className="h-3 w-3 mr-1.5" /> Add to Saved
-                      </Button>
+                      {aiStatus !== 'booked' && (
+                        <Button size="sm" variant="secondary" className="w-full text-xs h-7 bg-white/10 hover:bg-white/20 text-white" onClick={() => handleAddToCart(card)}>
+                          <Plus className="h-3 w-3 mr-1.5" /> Add to Saved
+                        </Button>
+                      )}
                     </MarkerPopup>
                   </MapMarker>
                 )
@@ -796,13 +1064,26 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 
               {/* Floating Progress Status */}
               {aiStatus === 'thinking' && (
-                <div className="absolute top-8 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-4">
-                  <div className="bg-blue-600 text-white px-4 py-2 rounded-full shadow-2xl flex items-center gap-3 backdrop-blur-md border border-white/20">
+                <div className="absolute top-8 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-4 flex flex-col items-center gap-2">
+                  <div className="bg-blue-600/90 text-white px-5 py-2.5 rounded-full shadow-2xl flex items-center gap-3 backdrop-blur-md border border-white/20">
                     <Zap className="h-4 w-4 animate-pulse fill-current" />
-                    <span className="text-xs font-bold uppercase tracking-wide">
-                        Adealy is designing {aiPromptedBy && members.find(m => m.user_id === aiPromptedBy)?.user_profiles?.first_name ? `${members.find(m => m.user_id === aiPromptedBy)?.user_profiles?.first_name}'s` : (aiPromptedBy === user?.sub ? 'your' : 'the')} trip...
+                    <span className="text-sm font-bold uppercase tracking-wide">
+                      {streamStatus ? streamStatus.message : (
+                        `Adealy is designing ${aiPromptedBy && members.find(m => m.user_id === aiPromptedBy)?.user_profiles?.first_name ? members.find(m => m.user_id === aiPromptedBy)?.user_profiles?.first_name + "'s" : (aiPromptedBy === user?.sub ? 'your' : 'the')} trip...`
+                      )}
                     </span>
                   </div>
+                  {streamStatus && (
+                    <div className="flex gap-1 mt-1">
+                      {Array.from({ length: streamStatus.total }).map((_, idx) => (
+                        <div key={idx} className={cn(
+                          "h-1.5 rounded-full transition-all duration-500",
+                          idx < streamStatus.step ? "w-6 bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]" :
+                            idx === streamStatus.step ? "w-6 bg-blue-500/50 animate-pulse" : "w-2 bg-blue-500/20"
+                        )} />
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
               {aiStatus === 'cooldown' && (
@@ -815,7 +1096,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
             </Map>
           ) : (
             // Timeline View (Editorial Style)
-            <div className="w-full h-full overflow-y-auto bg-background">
+            <div className="flex-1 w-full overflow-y-auto bg-background">
               <div className="max-w-3xl mx-auto py-12 px-6 md:px-12 space-y-12">
 
                 {/* Visual Trip Header */}
@@ -909,7 +1190,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                                 {/* Time Column */}
                                 <div className="min-w-[80px] flex md:flex-col items-center md:items-start gap-2 md:gap-0">
                                   <span className="text-lg font-bold font-serif text-foreground">{card.data.startTime || "09:00"}</span>
-                                  <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{card.data.endTime ? `TO ${card.data.endTime}` : "AM"}</span>
+                                  <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{card.data.endTime ? `TO ${card.data.endTime} ` : "AM"}</span>
                                 </div>
 
                                 {/* Content */}
@@ -929,7 +1210,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                                     <div className="flex items-center justify-between mb-2">
                                       <h3 className="font-serif text-xl font-bold group-hover:text-primary transition-colors">{card.name}</h3>
                                       <span className="text-sm font-bold bg-primary/10 text-primary px-2 py-1 rounded-md">
-                                        {card.data.price === 0 || !card.data.price ? "Free" : `$${card.data.price}`}
+                                        {card.data.price === 0 || !card.data.price ? "Free" : `$${card.data.price} `}
                                       </span>
                                     </div>
                                     <div className="text-sm text-muted-foreground leading-relaxed line-clamp-2 md:line-clamp-none">{card.data.description}</div>
@@ -951,8 +1232,8 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                                   {card.type === 'transport' && card.data.from && card.data.to && (() => {
                                     const mode = card.data.mode || 'driving';
                                     const travelmode = mode === 'walking' ? 'walking' : mode === 'transit' ? 'transit' : 'driving';
-                                    const origin = `${card.data.from.lat},${card.data.from.lng}`;
-                                    const dest = `${card.data.to.lat},${card.data.to.lng}`;
+                                    const origin = `${card.data.from.lat},${card.data.from.lng} `;
+                                    const dest = `${card.data.to.lat},${card.data.to.lng} `;
                                     const mapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${dest}&travelmode=${travelmode}`;
                                     return (
                                       <div className="mt-4 space-y-2">
@@ -976,25 +1257,29 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                                   })()}
 
 
-                                  <div className="flex items-center justify-end pt-2 opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0">
-                                    <Button size="sm" variant="ghost" className="text-xs hover:text-primary gap-1" onClick={() => handleAddToCart(card)}>
-                                      <Plus className="h-3 w-3" /> Save to Collection
-                                    </Button>
-                                  </div>
-                                </div>
-                              </div>
-                            </motion.div>
+                                  {
+                                    aiStatus !== 'booked' && (
+                                      <div className="flex items-center justify-end pt-2 opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0">
+                                        <Button size="sm" variant="ghost" className="text-xs hover:text-primary gap-1" onClick={() => handleAddToCart(card)}>
+                                          <Plus className="h-3 w-3" /> Save to Collection
+                                        </Button>
+                                      </div>
+                                    )
+                                  }
+                                </div >
+                              </div >
+                            </motion.div >
                           ))
                         )}
-                      </div>
-                    </motion.div>
+                      </div >
+                    </motion.div >
                   );
                 })}
-              </div>
-            </div>
+              </div >
+            </div >
           )
           }
-        </div >
+        </div>
       </main >
 
       {/* 3. Right Sidebar - Copilot/Chat */}
@@ -1002,18 +1287,18 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
         {/* Tabs */}
         < div className="flex items-center p-2 border-b border-sidebar-border" >
           {
-            ['design', 'saved', 'config'].map((tab) => (
+            ['design', 'saved', 'purchasing', 'config'].map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab as any)}
                 className={cn(
-                  "flex-1 py-2 text-xs font-bold uppercase tracking-wider rounded-md transition-colors relative",
+                  "flex-1 py-2 text-[10px] font-bold uppercase tracking-wider rounded-md transition-colors relative",
                   activeTab === tab ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:text-sidebar-foreground"
                 )}
               >
                 {tab}
                 {tab === 'saved' && cart.length > 0 && (
-                  <span className="absolute top-1 right-2 h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
+                  <span className="absolute top-1 right-2 h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />
                 )}
               </button>
             ))
@@ -1052,6 +1337,90 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                   ))}
                 </>
               )}
+            </div>
+          ) : activeTab === 'purchasing' ? (
+            <div className="flex-1 overflow-y-auto p-4 space-y-6">
+              <div className="flex items-center gap-2 mb-2 bg-emerald-500/10 p-4 rounded-xl border border-emerald-500/20">
+                <ShoppingBag className="h-5 w-5 text-emerald-500" />
+                <div>
+                  <h3 className="text-sm font-black text-emerald-600 uppercase tracking-tight">Order Summary</h3>
+                  <p className="text-[10px] font-bold text-emerald-600/70">{cart.length} items selected</p>
+                </div>
+              </div>
+
+              {/* Cost Breakdown */}
+              <div className="space-y-4">
+                <div className="flex justify-between items-end px-1">
+                  <div>
+                    <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest mb-1">Total Budget</p>
+                    <p className="text-2xl font-black tracking-tighter">${calculatedBudgetUsed}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest mb-1">Per Person</p>
+                    <p className="text-lg font-black text-primary tracking-tighter">${splitTotal}</p>
+                  </div>
+                </div>
+
+                <div className="h-px bg-border/40" />
+
+                {/* Items in Selection */}
+                <div className="space-y-2">
+                  <h4 className="text-[10px] font-black text-muted-foreground uppercase tracking-widest px-1">Selected Assets</h4>
+                  {cart.length === 0 ? (
+                    <p className="text-xs text-muted-foreground italic p-2 text-center">No items saved to your collection yet.</p>
+                  ) : (
+                    cart.map(item => (
+                      <div key={item.id} className="flex items-center justify-between p-3 bg-muted/30 rounded-lg border border-border/10">
+                        <div className="flex items-center gap-3">
+                          <div className={cn("h-8 w-8 rounded-md flex items-center justify-center",
+                            item.type === 'stay' ? "bg-orange-500/10 text-orange-500" :
+                              item.type === 'activity' ? "bg-blue-500/10 text-blue-500" : "bg-emerald-500/10 text-emerald-500"
+                          )}>
+                            {item.type === 'stay' ? <BedDouble className="h-4 w-4" /> : item.type === 'activity' ? <Camera className="h-4 w-4" /> : <Train className="h-4 w-4" />}
+                          </div>
+                          <div>
+                            <p className="text-xs font-bold truncate max-w-[150px]">{item.name}</p>
+                            <p className="text-[10px] text-muted-foreground capitalize">{item.type}</p>
+                          </div>
+                        </div>
+                        <span className="text-xs font-bold text-foreground">${item.data.price || 0}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <div className="h-px bg-border/40" />
+
+                {/* Shared Payment List */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between px-1">
+                    <h4 className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Payment Network</h4>
+                    <Users className="h-3 w-3 text-muted-foreground" />
+                  </div>
+                  <div className="space-y-2">
+                    {members.map(m => (
+                      <div key={m.id} className="flex items-center justify-between p-3 bg-card border border-border/50 rounded-lg">
+                        <div className="flex items-center gap-2">
+                          <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center text-[10px] font-black uppercase">
+                            {m.user_profiles?.first_name?.[0] || 'M'}
+                          </div>
+                          <span className="text-xs font-bold">{m.user_id === user?.sub ? 'You' : (m.user_profiles?.first_name || 'Member')}</span>
+                        </div>
+                        <Badge variant="outline" className="text-[9px] font-black uppercase h-5 text-muted-foreground/60">Pending</Badge>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {isOwner && aiStatus === 'idle' && cart.length > 0 && (
+                  <Button
+                    onClick={() => setShowCheckoutModal(true)}
+                    className="w-full h-12 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all active:scale-95 shadow-lg shadow-emerald-500/20"
+                  >
+                    Initiate Checkout flow
+                  </Button>
+                )}
+              </div>
             </div>
           ) : activeTab === 'config' ? (
             <div className="flex-1 overflow-y-auto p-4 space-y-5">
@@ -1162,7 +1531,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                   const senderMember = members.find(m => m.user_id === msg.sender_id);
                   const senderProfile = senderMember?.user_profiles;
                   const senderName = isAi ? 'Adealy' : (senderProfile?.first_name ? `${senderProfile.first_name} ${senderProfile.last_name || ''}`.trim() : (msg.sender_id === user?.sub ? 'You' : 'Collaborator'));
-                  
+
                   return (
                     <div key={i} className={cn("flex w-full gap-3", !isAi ? "justify-end" : "justify-start")}>
                       {isAi && (
@@ -1170,57 +1539,57 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                           <img src="/logo.png" alt="Adealy" className="h-full w-full object-cover" />
                         </div>
                       )}
-                      
+
                       <div className={cn("flex flex-col max-w-[80%]", !isAi ? "items-end" : "items-start")}>
-                         <div className="flex items-center gap-2 mb-1 px-1">
-                            <span className="text-[10px] font-bold text-muted-foreground">{senderName}</span>
-                         </div>
-                         <div className={cn(
-                            "text-sm p-3 shadow-md leading-relaxed",
-                            !isAi 
-                              ? "bg-blue-600 text-white rounded-2xl rounded-tr-sm" 
-                              : "bg-card text-card-foreground rounded-2xl rounded-tl-sm border border-border"
-                         )}>
-                            <MarkdownText content={msg.content} />
-                         </div>
+                        <div className="flex items-center gap-2 mb-1 px-1">
+                          <span className="text-[10px] font-bold text-muted-foreground">{senderName}</span>
+                        </div>
+                        <div className={cn(
+                          "text-sm p-3 shadow-md leading-relaxed",
+                          !isAi
+                            ? "bg-blue-600 text-white rounded-2xl rounded-tr-sm"
+                            : "bg-card text-card-foreground rounded-2xl rounded-tl-sm border border-border"
+                        )}>
+                          <MarkdownText content={msg.content} />
+                        </div>
                       </div>
 
                       {!isAi && (
-                         <div className="flex-shrink-0 h-8 w-8 bg-blue-600 rounded-full flex items-center justify-center shadow-md overflow-hidden border border-border">
-                            {msg.sender_id === user?.sub && user?.picture ? (
-                                <img src={user.picture} alt="Avatar" className="h-full w-full object-cover" />
-                            ) : senderProfile?.avatar_url ? (
-                                 <img src={senderProfile.avatar_url} alt="Avatar" className="h-full w-full object-cover" />
-                            ) : (
-                                <UserIcon className="h-4 w-4 text-white" />
-                            )}
-                         </div>
+                        <div className="flex-shrink-0 h-8 w-8 bg-blue-600 rounded-full flex items-center justify-center shadow-md overflow-hidden border border-border">
+                          {msg.sender_id === user?.sub && user?.picture ? (
+                            <img src={user.picture} alt="Avatar" className="h-full w-full object-cover" />
+                          ) : senderProfile?.avatar_url ? (
+                            <img src={senderProfile.avatar_url} alt="Avatar" className="h-full w-full object-cover" />
+                          ) : (
+                            <UserIcon className="h-4 w-4 text-white" />
+                          )}
+                        </div>
                       )}
                     </div>
                   );
                 })
               )}
               {aiStatus === 'thinking' && (
-                 <div className="flex w-full gap-3 justify-start opacity-70">
-                    <div className="flex-shrink-0 h-8 w-8 bg-primary rounded-full flex items-center justify-center shadow-md animate-pulse">
-                       <span className="text-primary-foreground font-bold text-sm">A</span>
+                <div className="flex w-full gap-3 justify-start opacity-70">
+                  <div className="flex-shrink-0 h-8 w-8 bg-primary rounded-full flex items-center justify-center shadow-md animate-pulse">
+                    <span className="text-primary-foreground font-bold text-sm">A</span>
+                  </div>
+                  <div className="flex flex-col items-start max-w-[80%]">
+                    <div className="text-sm p-3 shadow-sm leading-relaxed bg-card text-muted-foreground rounded-2xl rounded-tl-sm border border-border italic flex items-center gap-2">
+                      <div className="flex gap-1 mr-1">
+                        <span className="h-1.5 w-1.5 bg-primary/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="h-1.5 w-1.5 bg-primary/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="h-1.5 w-1.5 bg-primary/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                      </div>
+                      Generating {aiPromptedBy && members.find(m => m.user_id === aiPromptedBy)?.user_profiles?.first_name ? `${members.find(m => m.user_id === aiPromptedBy)?.user_profiles?.first_name}'s` : (aiPromptedBy === user?.sub ? 'your' : 'the')} prompt...
                     </div>
-                    <div className="flex flex-col items-start max-w-[80%]">
-                       <div className="text-sm p-3 shadow-sm leading-relaxed bg-card text-muted-foreground rounded-2xl rounded-tl-sm border border-border italic flex items-center gap-2">
-                          <div className="flex gap-1 mr-1">
-                             <span className="h-1.5 w-1.5 bg-primary/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                             <span className="h-1.5 w-1.5 bg-primary/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                             <span className="h-1.5 w-1.5 bg-primary/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                          </div>
-                          Adealy is designing {aiPromptedBy && members.find(m => m.user_id === aiPromptedBy)?.user_profiles?.first_name ? `${members.find(m => m.user_id === aiPromptedBy)?.user_profiles?.first_name}'s` : (aiPromptedBy === user?.sub ? 'your' : 'the')} trip...
-                       </div>
-                    </div>
-                 </div>
+                  </div>
+                </div>
               )}
               {aiStatus === 'cooldown' && (
-                 <div className="flex w-full justify-center my-2">
-                    <span className="text-[10px] uppercase font-bold text-muted-foreground bg-muted px-2 py-1 rounded-full">Adealy is cooling down...</span>
-                 </div>
+                <div className="flex w-full justify-center my-2">
+                  <span className="text-[10px] uppercase font-bold text-muted-foreground bg-muted px-2 py-1 rounded-full">Adealy is cooling down...</span>
+                </div>
               )}
               <div ref={messagesEndRef} />
             </div>
@@ -1235,22 +1604,22 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                 <textarea
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
-                  disabled={aiStatus !== "idle"}
+                  disabled={aiStatus !== "idle" || someOnePaid}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
                       handleGenerate();
                     }
                   }}
-                  placeholder={aiStatus === 'thinking' ? "Adealy is thinking..." : aiStatus === 'cooldown' ? "Cooling down..." : activeTab === 'saved' ? "Use saved items to generate plan..." : "Mention @Adealy to plan trip..."}
+                  placeholder={aiStatus === 'booked' ? "Trip is finalized (View Only)" : (aiStatus === 'payment' || someOnePaid) ? "Bot locked (Payment in progress)" : aiStatus === 'thinking' ? "Adealy is thinking..." : aiStatus === 'booking' ? "Booking in progress..." : aiStatus === 'cooldown' ? "Cooling down..." : activeTab === 'saved' ? "Use saved items to generate plan..." : "Mention @Adealy to plan trip..."}
                   className="w-full bg-muted border border-border/10 rounded-xl p-3 pr-10 text-sm text-foreground placeholder:text-muted-foreground min-h-[50px] max-h-[120px] resize-none focus:outline-none focus:ring-1 focus:ring-primary/50"
                 />
                 <button
                   onClick={handleGenerate}
-                  disabled={!prompt.trim() || aiStatus !== "idle"}
+                  disabled={!prompt.trim() || aiStatus !== "idle" || someOnePaid}
                   className="absolute right-2 bottom-3 p-1.5 bg-primary rounded-lg text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
-                  {aiStatus !== "idle" ? <Zap className="h-4 w-4 animate-pulse" /> : <Send className="h-4 w-4" />}
+                  {aiStatus === 'booked' ? <Lock className="h-4 w-4" /> : (aiStatus === 'payment' || someOnePaid) ? <Lock className="h-4 w-4" /> : aiStatus !== "idle" ? <Zap className="h-4 w-4 animate-pulse" /> : <Send className="h-4 w-4" />}
                 </button>
               </div>
               {activeTab === 'saved' && cart.length > 0 && (
@@ -1270,8 +1639,116 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
             </div>
           )
         }
-
       </aside >
+
+      {/* Checkout Modal Overlay */}
+      {
+        showCheckoutModal && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowCheckoutModal(false)}>
+            <div className="bg-sidebar border border-sidebar-border rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-6" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <CreditCard className="h-5 w-5 text-emerald-500" />
+                  <h2 className="font-bold text-lg">Trip Checkout</h2>
+                </div>
+                <button onClick={() => setShowCheckoutModal(false)} className="text-muted-foreground hover:text-foreground text-xl leading-none">&times;</button>
+              </div>
+
+              {paymentError && (
+                <div className="bg-rose-500/10 p-3 rounded-lg border border-rose-500/20 text-rose-500 text-xs text-center font-bold">
+                  {paymentError}
+                </div>
+              )}
+
+              <div className="bg-muted/50 rounded-xl p-4 border border-border/50">
+
+                <div className="flex justify-between items-end mb-4">
+                  <div>
+                    <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest mb-1">Total Trip Cost</p>
+                    <p className="text-2xl font-serif font-bold text-foreground">${calculatedBudgetUsed}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest mb-1">Per Person ({members.length})</p>
+                    <p className="text-lg font-bold text-emerald-500">${splitTotal}</p>
+                  </div>
+                </div>
+              </div>
+
+              {aiStatus === 'idle' ? (
+                <div className="space-y-4">
+                  <div className="bg-amber-500/10 p-4 rounded-xl border border-amber-500/20 text-amber-500 text-xs leading-relaxed">
+                    <strong>Notice:</strong> This trip has {members.length} members. Starting checkout will lock the trip planning and require everyone to pay their share of ${splitTotal}.
+                  </div>
+                  {(isOwner || (members.length > 0 && members[0]?.user_id === user?.sub)) ? (
+                    <Button onClick={handleCheckout} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-6 rounded-xl font-bold text-base shadow-lg shadow-emerald-500/20">
+                      Start Shared Payment
+                    </Button>
+                  ) : (
+                    <div className="text-center p-4 border border-dashed border-border rounded-xl">
+                      <p className="text-sm text-muted-foreground">Waiting for the trip owner to start the checkout process.</p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+
+                <div className="space-y-6">
+                  <div className="space-y-3">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground px-1">Payment Status</h3>
+                    <div className="space-y-2 max-h-[200px] overflow-y-auto pr-2 custom-scrollbar">
+                      {members.map(m => {
+                        const profile = m.user_profiles;
+                        const isMe = m.user_id === user?.sub;
+                        const name = profile?.first_name ? `${profile.first_name} ${profile.last_name || ''}` : (isMe ? 'You' : 'Member');
+
+                        return (
+                          <div key={m.id} className="flex items-center justify-between p-3 bg-card border border-border/50 rounded-xl">
+                            <div className="flex items-center gap-3">
+                              <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center text-xs font-bold ring-2 ring-background">
+                                {profile?.first_name?.[0] || 'M'}
+                              </div>
+                              <div>
+                                <p className="text-sm font-bold">{name}</p>
+                                <p className="text-[10px] text-muted-foreground">{profile?.email}</p>
+                              </div>
+                            </div>
+                            {m.has_paid ? (
+                              <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 text-[10px] font-bold uppercase gap-1">
+                                <Check className="h-3 w-3" /> Paid
+                              </Badge>
+                            ) : (
+                              <Badge variant="outline" className="text-[10px] font-bold uppercase bg-muted/50 text-muted-foreground">Pending</Badge>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {!myMember?.has_paid ? (
+                    <Button onClick={handlePay} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-6 rounded-xl font-bold text-base shadow-lg shadow-emerald-500/20 gap-2">
+                      Pay My Share (${splitTotal})
+                    </Button>
+                  ) : (
+                    <div className="bg-emerald-500/10 p-4 rounded-xl border border-emerald-500/20 flex items-center gap-3">
+                      <div className="h-10 w-10 rounded-full bg-emerald-500 flex items-center justify-center">
+                        <Check className="h-6 w-6 text-white" />
+                      </div>
+                      <div>
+                        <p className="font-bold text-emerald-500">Your share is paid!</p>
+                        <p className="text-xs text-emerald-600/70">Waiting for other members to finish.</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <p className="text-[10px] text-center text-muted-foreground italic px-4">
+                Once everyone has paid, Adealy will finalize all bookings and the trip will be archived.
+              </p>
+            </div>
+          </div>
+        )
+      }
     </div >
   );
 }
@@ -1300,30 +1777,30 @@ function LayerItem({ icon: Icon, label, count, value, active, color, onClick }: 
 
 function MarkdownText({ content }: { content: string }) {
   if (!content) return null;
-  
+
   // Custom parser to handle bold text and images
   const lines = content.split('\\n');
-  
+
   return (
     <div className="space-y-3 leading-relaxed">
       {lines.map((line, i) => {
         if (!line.trim()) return <div key={i} className="h-2" />;
-        
+
         // Handle images: Detect ![alt](url) or standalone image URLs
         const imgMatch = line.match(/!\[(.*?)\]\((.*?)\)/) || line.match(/(https?:\/\/.*\.(?:png|jpg|jpeg|gif|webp)(?:\?.*)?)/i);
-        
+
         if (imgMatch) {
           const url = imgMatch[2] || imgMatch[1];
           const alt = imgMatch[1] || 'AI Image';
-          
+
           return (
             <div key={i} className="rounded-lg overflow-hidden my-2 border border-border/30 group/img rotate-1">
-               <img 
-                 src={getOptimizedImageUrl(url, 600, 300)} 
-                 alt={alt} 
-                 className="w-full h-auto object-cover transition-transform duration-500 group-hover/img:scale-110"
-                 loading="lazy"
-               />
+              <img
+                src={getOptimizedImageUrl(url, 600, 300)}
+                alt={alt}
+                className="w-full h-auto object-cover transition-transform duration-500 group-hover/img:scale-110"
+                loading="lazy"
+              />
             </div>
           );
         }

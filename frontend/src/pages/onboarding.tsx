@@ -12,7 +12,7 @@ export default function OnboardingPage() {
   const { user, isAuthenticated, isLoading } = useAuth0();
   const [, setLocation] = useLocation();
   const { toast } = useToast();
-  
+
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formData, setFormData] = useState({
     firstName: '',
@@ -66,9 +66,9 @@ export default function OnboardingPage() {
         title: "Profile saved!",
         description: "Your travel details have been successfully stored.",
       });
-      
-      setLocation('/planner');
-      
+
+      setLocation('/dashboard');
+
     } catch (error) {
       console.error(error);
       toast({
@@ -120,28 +120,28 @@ export default function OnboardingPage() {
           </CardHeader>
           <CardContent className="p-8 pt-4">
             <form onSubmit={handleSubmit} className="space-y-8">
-              
+
               <div className="grid grid-cols-2 gap-6">
                 <div className="space-y-3">
                   <Label htmlFor="firstName" className="text-xs font-black uppercase tracking-widest text-gray-400">First Name</Label>
-                  <Input 
-                    id="firstName" 
-                    name="firstName" 
-                    value={formData.firstName} 
-                    onChange={handleChange} 
-                    required 
+                  <Input
+                    id="firstName"
+                    name="firstName"
+                    value={formData.firstName}
+                    onChange={handleChange}
+                    required
                     placeholder="John"
                     className="h-14 bg-gray-100 border-none rounded-md px-6 font-bold text-gray-900 focus:bg-white focus:ring-0 focus:border-4 focus:border-primary transition-all"
                   />
                 </div>
                 <div className="space-y-3">
                   <Label htmlFor="lastName" className="text-xs font-black uppercase tracking-widest text-gray-400">Last Name</Label>
-                  <Input 
-                    id="lastName" 
-                    name="lastName" 
-                    value={formData.lastName} 
-                    onChange={handleChange} 
-                    required 
+                  <Input
+                    id="lastName"
+                    name="lastName"
+                    value={formData.lastName}
+                    onChange={handleChange}
+                    required
                     placeholder="Doe"
                     className="h-14 bg-gray-100 border-none rounded-md px-6 font-bold text-gray-900 focus:bg-white focus:ring-0 focus:border-4 focus:border-primary transition-all"
                   />
@@ -150,12 +150,12 @@ export default function OnboardingPage() {
 
               <div className="space-y-3">
                 <Label htmlFor="departureAirport" className="text-xs font-black uppercase tracking-widest text-gray-400">Home Airport (Code)</Label>
-                <Input 
-                  id="departureAirport" 
-                  name="departureAirport" 
-                  value={formData.departureAirport} 
-                  onChange={handleChange} 
-                  required 
+                <Input
+                  id="departureAirport"
+                  name="departureAirport"
+                  value={formData.departureAirport}
+                  onChange={handleChange}
+                  required
                   placeholder="e.g. JFK"
                   maxLength={3}
                   className="h-14 bg-gray-100 border-none rounded-md px-6 font-bold text-gray-900 uppercase focus:bg-white focus:ring-0 focus:border-4 focus:border-primary transition-all"
@@ -164,12 +164,12 @@ export default function OnboardingPage() {
 
               <div className="space-y-3">
                 <Label htmlFor="passportCountry" className="text-xs font-black uppercase tracking-widest text-gray-400">Passport Country of Origin</Label>
-                <Input 
-                  id="passportCountry" 
-                  name="passportCountry" 
-                  value={formData.passportCountry} 
-                  onChange={handleChange} 
-                  required 
+                <Input
+                  id="passportCountry"
+                  name="passportCountry"
+                  value={formData.passportCountry}
+                  onChange={handleChange}
+                  required
                   placeholder="United States"
                   className="h-14 bg-gray-100 border-none rounded-md px-6 font-bold text-gray-900 focus:bg-white focus:ring-0 focus:border-4 focus:border-primary transition-all"
                 />
@@ -177,13 +177,13 @@ export default function OnboardingPage() {
 
               <div className="space-y-3">
                 <Label htmlFor="passportExpiryDate" className="text-xs font-black uppercase tracking-widest text-gray-400">Passport Expiry Date</Label>
-                <Input 
-                  id="passportExpiryDate" 
-                  name="passportExpiryDate" 
+                <Input
+                  id="passportExpiryDate"
+                  name="passportExpiryDate"
                   type="date"
-                  value={formData.passportExpiryDate} 
-                  onChange={handleChange} 
-                  required 
+                  value={formData.passportExpiryDate}
+                  onChange={handleChange}
+                  required
                   className="h-14 bg-gray-100 border-none rounded-md px-6 font-bold text-gray-900 focus:bg-white focus:ring-0 focus:border-4 focus:border-primary transition-all"
                 />
               </div>

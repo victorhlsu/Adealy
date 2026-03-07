@@ -28,9 +28,9 @@ export default function LandingPage() {
         </div>
         <nav className="flex items-center gap-6">
           {isAuthenticated ? (
-            <Link href="/planner">
+            <Link href="/dashboard">
               <Button className="h-12 px-6 font-bold transition-all duration-200 hover:scale-105 active:scale-95">
-                Go to Planner
+                Go to Dashboard
               </Button>
             </Link>
           ) : (
@@ -38,8 +38,8 @@ export default function LandingPage() {
               <Button variant="ghost" className="font-bold hover:bg-gray-100 h-12 px-6" onClick={() => loginWithRedirect()}>
                 Log In
               </Button>
-              <Button 
-                className="h-12 px-8 font-bold bg-primary text-white transition-all duration-200 hover:scale-105 active:scale-95" 
+              <Button
+                className="h-12 px-8 font-bold bg-primary text-white transition-all duration-200 hover:scale-105 active:scale-95"
                 onClick={() => loginWithRedirect({ authorizationParams: { screen_hint: 'signup' } })}
               >
                 Sign Up
@@ -62,33 +62,43 @@ export default function LandingPage() {
               <Globe className="w-4 h-4" />
               <span>Version 2.0 Is Here</span>
             </div>
-            
+
             <h1 className="text-6xl md:text-8xl font-black text-white tracking-tighter leading-[0.9]">
               Travel Planning,<br />
               <span className="text-white/70">Simplified.</span>
             </h1>
-            
+
             <p className="text-xl md:text-2xl text-white/90 font-medium max-w-2xl mx-auto leading-relaxed">
-              The smartest way to design your international itineraries. 
+              The smartest way to design your international itineraries.
               Flat. Fast. Functional. Completely AI-driven.
             </p>
-            
+
             <div className="pt-8 flex flex-col sm:flex-row items-center justify-center gap-4">
               {isAuthenticated ? (
-                 <Link href="/planner">
-                   <Button className="h-16 px-10 text-xl font-black bg-white text-primary rounded-md transition-all duration-200 hover:scale-110 active:scale-95 shadow-none border-none">
-                     Continue Planning
-                   </Button>
-                 </Link>
+                <Link href="/dashboard">
+                  <Button className="h-16 px-10 text-xl font-black bg-white text-primary rounded-md transition-all duration-200 hover:scale-110 active:scale-95 shadow-none border-none">
+                    Continue Planning
+                  </Button>
+                </Link>
               ) : (
-                <Button 
-                  className="h-16 px-10 text-xl font-black bg-white text-primary rounded-md transition-all duration-200 hover:scale-110 active:scale-95 shadow-none border-none"
-                  onClick={() => loginWithRedirect({ authorizationParams: { screen_hint: 'signup' } })}
-                >
-                  Start Your Journey Now
-                </Button>
+                <>
+                  <Button
+                    className="h-16 px-10 text-xl font-black bg-white text-primary rounded-md transition-all duration-200 hover:scale-110 active:scale-95 shadow-none border-none"
+                    onClick={() => loginWithRedirect({ authorizationParams: { screen_hint: 'signup' } })}
+                  >
+                    Start Your Journey Now
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="h-16 px-10 text-xl font-black text-white hover:bg-white/10 rounded-md transition-all duration-200 hover:scale-110 active:scale-95 border-2 border-white/20"
+                    onClick={() => loginWithRedirect()}
+                  >
+                    Log In
+                  </Button>
+                </>
               )}
             </div>
+
           </div>
         </section>
 
@@ -104,7 +114,7 @@ export default function LandingPage() {
                 Organize flights, hotels, and activities in a single, high-speed interface. No clutter, just travel.
               </p>
             </div>
-            
+
             <div className="flex flex-col items-start text-left space-y-4 p-10 rounded-lg bg-emerald-50 transition-all duration-200 hover:scale-105 group cursor-pointer border-b-4 border-emerald-100">
               <div className="bg-white p-4 rounded-full border-2 border-secondary text-secondary transition-transform duration-200 group-hover:scale-110">
                 <ShieldCheck className="w-8 h-8" />
@@ -114,7 +124,7 @@ export default function LandingPage() {
                 Securely store passport and visa details. Access them instantly, anywhere in the world.
               </p>
             </div>
-            
+
             <div className="flex flex-col items-start text-left space-y-4 p-10 rounded-lg bg-amber-50 transition-all duration-200 hover:scale-105 group cursor-pointer border-b-4 border-amber-100">
               <div className="bg-white p-4 rounded-full border-2 border-amber-500 text-amber-500 transition-transform duration-200 group-hover:scale-110">
                 <Zap className="w-8 h-8" />
@@ -136,9 +146,9 @@ export default function LandingPage() {
             <p className="text-xl md:text-2xl text-white font-bold opacity-90">
               Join thousands of travelers planning with Adealy.
             </p>
-            <Button 
-               className="h-16 px-12 text-xl font-black bg-gray-900 text-white rounded-md transition-all duration-200 hover:scale-110 active:scale-95 border-none"
-               onClick={() => loginWithRedirect({ authorizationParams: { screen_hint: 'signup' } })}
+            <Button
+              className="h-16 px-12 text-xl font-black bg-gray-900 text-white rounded-md transition-all duration-200 hover:scale-110 active:scale-95 border-none"
+              onClick={() => loginWithRedirect({ authorizationParams: { screen_hint: 'signup' } })}
             >
               Start Free Trial
             </Button>
@@ -149,10 +159,10 @@ export default function LandingPage() {
         <footer className="w-full bg-gray-900 py-16 px-6 text-white flex flex-col items-center">
           <div className="max-w-6xl w-full flex flex-col md:flex-row justify-between items-center gap-8 border-b-2 border-white/5 pb-12">
             <div className="flex items-center gap-3">
-               <div className="bg-white p-1 rounded-md w-10 h-10 flex items-center justify-center">
-                 <img src="/logo.png" alt="Adealy" className="w-full h-full object-cover" />
-               </div>
-               <span className="text-2xl font-black tracking-tighter italic">Adealy</span>
+              <div className="bg-white p-1 rounded-md w-10 h-10 flex items-center justify-center">
+                <img src="/logo.png" alt="Adealy" className="w-full h-full object-cover" />
+              </div>
+              <span className="text-2xl font-black tracking-tighter italic">Adealy</span>
             </div>
             <div className="flex gap-8 text-sm font-bold opacity-60">
               <span className="hover:opacity-100 cursor-pointer transition-opacity">Privacy</span>
