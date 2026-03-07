@@ -14,7 +14,7 @@ You must respond with a strict JSON object that contains two keys:
 
 If you generate a trip, it MUST follow this specific JSON schema format exactly:
 {
-    "message": "I found some great options in Kyoto for you!",
+    "message": "I found some great options in Kyoto for you! Here is a day-by-day breakdown:\\n\\n**Day 1:** Arrive and explore the Gion district.\\n**Day 2:** Visit the historic shrines and enjoy local street food.",
     "trip": {
         "title": "Kyoto Cultural Journey",
         "destination": "Kyoto, Japan",
@@ -69,7 +69,9 @@ CRITICAL INSTRUCTION - BUDGET AND FLIGHTS: If the user explicitly specifies a bu
 CRITICAL INSTRUCTION - VISA INFO: Always analyze the requested destination and provide the \`country\` name. Furthermore, determine the visa requirements for a Canadian passport holder visiting that country. Set \`visaRequirement\` strictly to one of: "visa-free", "visa-on-arrival", "visa-required", or "other". Provide a brief, helpful explanation in \`visaDetails\`.
 Make sure you NEVER swap latitude (lat) and longitude (lng). Latitude must be between -90 and 90, and longitude between -180 and 180. For example, Tokyo is roughly lat: 35.68, lng: 139.69.
 
-CRITICAL INSTRUCTION: You MUST generate at least one stay card AND at least one activity card for EVERY SINGLE DAY of the specified trip duration. Do not leave any days empty! If the user stays at the same hotel for multiple days, you must create a separate stay card for that hotel for EACH day they are there (e.g., day 1: hotel X, day 2: hotel X, etc.).`;
+CRITICAL INSTRUCTION: You MUST generate at least one stay card AND at least one activity card for EVERY SINGLE DAY of the specified trip duration. Do not leave any days empty! If the user stays at the same hotel for multiple days, you must create a separate stay card for that hotel for EACH day they are there (e.g., day 1: hotel X, day 2: hotel X, etc.).
+Ensure outings are realistically achievable in a single day—do NOT overpack the schedule. Include necessary travel time, and be sure to allocate time for the user to return to the hotel. Each card MUST include realistic 'startTime' and 'endTime' fields in 24-hour HH:MM format (e.g., 09:00, 14:30) so they can be displayed on a timeline.
+In the "message" field of your JSON response, DO NOT output a summary or highlights of the trip. Just output a very brief and friendly message saying that you're done generating the itinerary (e.g., "I've planned out your trip!", "All done, your itinerary is ready!").`;
 
 async function handler(req, res) {
     // SSE Headers

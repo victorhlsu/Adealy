@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useLocation } from "wouter";
+import maplibregl from "maplibre-gl";
 import {
   Map as MapIcon,
   Calendar,
@@ -20,7 +21,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Map, MapControls, MapMarker, MarkerContent, MarkerPopup } from "@/components/ui/map";
+import { Map, MapControls, MapMarker, MarkerContent, MarkerPopup, type MapRef } from "@/components/ui/map";
 import { CountryLayer } from "@/components/map/CountryLayer";
 import { RoutesLayer } from "@/components/map/RoutesLayer";
 import { cn } from "@/lib/utils";
@@ -50,6 +51,34 @@ export default function PlannerPage() {
   const [activeLayer, setActiveLayer] = useState<'all' | 'stay' | 'activity' | 'transport'>('all');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<MapRef>(null);
+
+  // Zoom map to bounds when cards or selected day changes
+  useEffect(() => {
+    if (!mapRef.current || cards.length === 0 || viewMode !== 'map') return;
+    const map = mapRef.current;
+
+    // Filter to selected day, or all cards if 0
+    let visibleCards = selectedDay === 0 ? cards : cards.filter(c => c.day === selectedDay);
+
+    // Further filter by active mode if not 'all'
+    if (activeLayer !== 'all') {
+      visibleCards = visibleCards.filter(c => c.type === activeLayer);
+    }
+
+    if (visibleCards.length === 0) return;
+
+    const bounds = new maplibregl.LngLatBounds();
+    visibleCards.forEach(c => {
+      if (c.position?.lng !== undefined && c.position?.lat !== undefined) {
+        bounds.extend([c.position.lng, c.position.lat]);
+      }
+    });
+
+    if (!bounds.isEmpty()) {
+      map.fitBounds(bounds, { padding: 100, duration: 1200, maxZoom: 14 });
+    }
+  }, [selectedDay, cards, viewMode, activeLayer]);
 
   const handleGenerate = async () => {
     if (!prompt.trim()) return;
@@ -168,7 +197,7 @@ export default function PlannerPage() {
                   onClick={() => setSelectedDay(0)}
                 >
                   <span className="font-medium">All Days</span>
-                  <span className="text-xs font-bold opacity-80">${calculatedBudgetUsed}</span>
+                  <span className="text-xs font-bold opacity-80">{calculatedBudgetUsed === 0 ? "Free" : `$${calculatedBudgetUsed}`}</span>
                 </button>
                 {Array.from({ length: trip.days }).map((_, i) => {
                   const dayNum = i + 1;
@@ -176,20 +205,36 @@ export default function PlannerPage() {
                   const dayCost = dayCards.reduce((sum, c) => sum + (c.data?.price || 0), 0);
 
                   return (
-                    <button
-                      key={i}
-                      className={cn(
-                        "w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors",
-                        selectedDay === dayNum ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                    <div key={i} className="flex flex-col gap-1">
+                      <button
+                        className={cn(
+                          "w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors",
+                          selectedDay === dayNum ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                        )}
+                        onClick={() => setSelectedDay(dayNum)}
+                      >
+                        <div className="flex flex-col items-start text-left">
+                          <span className="font-medium">Day {dayNum}</span>
+                          <span className="text-[10px] opacity-70">{trip?.destination?.split(',')[0] || "City"}</span>
+                        </div>
+                        <span className="text-xs font-bold opacity-80">{dayCost === 0 ? "Free" : `$${dayCost}`}</span>
+                      </button>
+
+                      {selectedDay === dayNum && dayCards.length > 0 && (
+                        <div className="pl-6 pr-2 py-2 space-y-3 relative before:absolute before:inset-y-3 before:left-[17px] before:w-px before:bg-border/40">
+                          {dayCards.sort((a, b) => (a.data.startTime || '').localeCompare(b.data.startTime || '')).map(card => (
+                            <div key={card.id} className="relative flex flex-col gap-0.5 group/timeline cursor-pointer">
+                              <div className="absolute top-1.5 -left-[14px] w-2 h-2 rounded-full border border-background bg-muted-foreground group-hover/timeline:bg-primary group-hover/timeline:scale-125 transition-all" />
+                              <div className="text-[9px] font-bold text-muted-foreground uppercase tracking-widest leading-none flex items-center gap-1.5">
+                                {card.data.startTime || "??:??"}
+                                {card.data.endTime && <span className="flex items-center gap-1"><ArrowRight className="h-2 w-2 opacity-50" /> {card.data.endTime}</span>}
+                              </div>
+                              <span className="text-xs font-medium text-foreground line-clamp-1 leading-tight group-hover/timeline:text-primary transition-colors">{card.name}</span>
+                            </div>
+                          ))}
+                        </div>
                       )}
-                      onClick={() => setSelectedDay(dayNum)}
-                    >
-                      <div className="flex flex-col items-start text-left">
-                        <span className="font-medium">Day {dayNum}</span>
-                        <span className="text-[10px] opacity-70">{trip?.destination?.split(',')[0] || "City"}</span>
-                      </div>
-                      <span className="text-xs font-bold opacity-80">${dayCost}</span>
-                    </button>
+                    </div>
                   );
                 })}
               </div>
@@ -240,7 +285,7 @@ export default function PlannerPage() {
           </div>
 
           {/* Center Toggles */}
-          <div className="absolute left-1/2 -translate-x-1/2 flex items-center bg-muted p-1 rounded-lg border border-border/50">
+          < div className="absolute left-1/2 -translate-x-1/2 flex items-center bg-muted p-1 rounded-lg border border-border/50" >
             <button
               onClick={() => setViewMode('map')}
               className={cn("px-3 py-1 rounded-md text-xs font-medium transition-all flex items-center gap-2", viewMode === 'map' ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}
@@ -253,10 +298,10 @@ export default function PlannerPage() {
             >
               <Calendar className="h-3 w-3" /> Timeline
             </button>
-          </div>
+          </div >
 
           {/* Right Actions */}
-          <div className="flex items-center gap-4">
+          < div className="flex items-center gap-4" >
             {/* Budget Bar */}
             {/* Budget Bar */}
             <div className="hidden lg:flex items-center gap-3 bg-muted px-3 py-1.5 rounded-full border border-border/10">
@@ -274,13 +319,14 @@ export default function PlannerPage() {
             <Button size="sm" className="bg-primary hover:bg-primary/90 text-primary-foreground h-8 text-xs gap-2">
               <Share2 className="h-3 w-3" /> Share
             </Button>
-          </div>
-        </header>
+          </div >
+        </header >
 
         {/* Content View */}
-        <div className="flex-1 relative bg-background pt-14">
+        < div className="flex-1 relative bg-background pt-14" >
           {viewMode === 'map' ? (
             <Map
+              ref={mapRef}
               center={[0, 20]} // Default to World View
               zoom={1.5}
               className="w-full h-full"
@@ -441,7 +487,7 @@ export default function PlannerPage() {
                                 {/* Time Column */}
                                 <div className="min-w-[80px] flex md:flex-col items-center md:items-start gap-2 md:gap-0">
                                   <span className="text-lg font-bold font-serif text-foreground">{card.data.startTime || "09:00"}</span>
-                                  <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">AM</span>
+                                  <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{card.data.endTime ? `TO ${card.data.endTime}` : "AM"}</span>
                                 </div>
 
                                 {/* Content */}
@@ -458,7 +504,12 @@ export default function PlannerPage() {
                                   </div>
 
                                   <div>
-                                    <h3 className="font-serif text-xl font-bold mb-2 group-hover:text-primary transition-colors">{card.name}</h3>
+                                    <div className="flex items-center justify-between mb-2">
+                                      <h3 className="font-serif text-xl font-bold group-hover:text-primary transition-colors">{card.name}</h3>
+                                      <span className="text-sm font-bold bg-primary/10 text-primary px-2 py-1 rounded-md">
+                                        {card.data.price === 0 || !card.data.price ? "Free" : `$${card.data.price}`}
+                                      </span>
+                                    </div>
                                     <div className="text-sm text-muted-foreground leading-relaxed line-clamp-2 md:line-clamp-none">{card.data.description}</div>
                                   </div>
 
@@ -486,14 +537,15 @@ export default function PlannerPage() {
                 })}
               </div>
             </div>
-          )}
-        </div>
-      </main>
+          )
+          }
+        </div >
+      </main >
 
       {/* 3. Right Sidebar - Copilot/Chat */}
-      <aside className="w-[380px] bg-sidebar border-l border-sidebar-border flex flex-col shrink-0 z-20">
+      < aside className="w-[380px] bg-sidebar border-l border-sidebar-border flex flex-col shrink-0 z-20" >
         {/* Tabs */}
-        <div className="flex items-center p-2 border-b border-sidebar-border">
+        < div className="flex items-center p-2 border-b border-sidebar-border" >
           {
             ['design', 'saved', 'config'].map((tab) => (
               <button
@@ -562,7 +614,7 @@ export default function PlannerPage() {
                       "max-w-[85%] text-sm p-3 rounded-2xl shadow-sm",
                       msg.role === 'user' ? "bg-muted text-foreground rounded-tr-sm" : "bg-primary/10 text-primary rounded-tl-sm border border-primary/20"
                     )}>
-                      {msg.content}
+                      <MarkdownText content={msg.content} />
                     </div>
                   </div>
                 ))
@@ -638,6 +690,28 @@ function LayerItem({ icon: Icon, label, count, value, active, color, onClick }: 
           {value || count}
         </span>
       )}
+    </div>
+  );
+}
+
+function MarkdownText({ content }: { content: string }) {
+  if (!content) return null;
+  return (
+    <div className="space-y-2 leading-relaxed">
+      {content.split('\\n').map((line, i) => {
+        if (!line.trim()) return <div key={i} className="h-2" />;
+        const parts = line.split(/(\*\*.*?\*\*)/g);
+        return (
+          <p key={i}>
+            {parts.map((part, j) => {
+              if (part.startsWith('**') && part.endsWith('**')) {
+                return <strong key={j} className="font-bold">{part.slice(2, -2)}</strong>;
+              }
+              return <span key={j}>{part}</span>;
+            })}
+          </p>
+        );
+      })}
     </div>
   );
 }
