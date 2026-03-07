@@ -24,7 +24,7 @@ import { Map, MapControls, MapMarker, MarkerContent, MarkerPopup } from "@/compo
 import { CountryLayer } from "@/components/map/CountryLayer";
 import { RoutesLayer } from "@/components/map/RoutesLayer";
 import { cn } from "@/lib/utils";
-import { mockStreamGenerator } from "@/services/mock-trip-service";
+import { streamTripGenerator } from "@/services/trip-service";
 import type { Trip, TripCard } from "@/types/trip";
 import { ModeToggle } from "@/components/mode-toggle";
 
@@ -41,6 +41,7 @@ export default function PlannerPage() {
   const [messages, setMessages] = useState<{ role: 'user' | 'ai', content: string, cards?: TripCard[] }[]>([
     { role: 'ai', content: "Hi! I'm your Adealy travel architect. Where shall we go next?" }
   ]);
+  const [sessionId, setSessionId] = useState<string | null>(null);
 
   // UI State
   const [viewMode, setViewMode] = useState<'map' | 'timeline'>('map');
@@ -59,16 +60,20 @@ export default function PlannerPage() {
     setIsGenerating(true);
 
     try {
-      const stream = mockStreamGenerator(currentPrompt);
+      const stream = streamTripGenerator(currentPrompt, sessionId);
 
       for await (const chunk of stream) {
-        if (chunk.type === 'progress') {
+        if (chunk.type === 'session_id') {
+          setSessionId(chunk.sessionId);
+        } else if (chunk.type === 'progress') {
           setStreamStatus(`${chunk.message} (${chunk.step}/${chunk.totalSteps})`);
         } else if (chunk.type === 'card_created') {
           setCards(prev => [...prev, chunk.card]);
         } else if (chunk.type === 'complete') {
-          setTrip(chunk.trip);
-          setCards(chunk.trip.cards);
+          if (chunk.trip) {
+            setTrip(chunk.trip);
+            setCards(chunk.trip.cards || []);
+          }
           setMessages(prev => [...prev, { role: 'ai', content: chunk.message }]);
           setIsGenerating(false);
           setStreamStatus("");

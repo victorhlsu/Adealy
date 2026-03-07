@@ -9,6 +9,8 @@ services:
     container_name: adealy-backend
     ports:
       - "3001:3001"
+    env_file:
+      - ./backend/.env
     environment:
       - NODE_ENV=development
       - PORT=3001

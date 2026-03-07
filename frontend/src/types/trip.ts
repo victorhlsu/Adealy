@@ -113,5 +113,6 @@ export type Trip = TripMetadata & {
 export type StreamChunk =
     | { type: 'progress'; message: string; step: number; totalSteps: number }
     | { type: 'card_created'; layer: string; card: TripCard }
-    | { type: 'complete'; trip: Trip; message: string }
+    | { type: 'complete'; trip: Trip | null; message: string }
+    | { type: 'session_id'; sessionId: string }
     | { type: 'error'; message: string };
