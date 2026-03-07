@@ -35,7 +35,6 @@ services:
       - ./frontend/src:/app/src
       - ./frontend/index.html:/app/index.html
       - ./frontend/vite.config.ts:/app/vite.config.ts
-      - ./frontend/postcss.config.mjs:/app/postcss.config.mjs
       - /app/node_modules
     networks:
       - adealy-network
