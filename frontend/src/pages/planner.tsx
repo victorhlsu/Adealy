@@ -47,6 +47,7 @@ export default function PlannerPage() {
   const [viewMode, setViewMode] = useState<'map' | 'timeline'>('map');
   const [activeTab, setActiveTab] = useState<'design' | 'saved' | 'config'>('design');
   const [selectedDay, setSelectedDay] = useState<number>(0);
+  const [activeLayer, setActiveLayer] = useState<'all' | 'stay' | 'activity' | 'transport'>('all');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -101,8 +102,16 @@ export default function PlannerPage() {
   }, [messages]);
 
   // Derived state
-  const displayedCards = selectedDay === 0 ? cards : cards.filter(c => c.day === selectedDay);
-  const budgetProgress = trip && trip.summary ? (trip.summary.budgetUsed / trip.summary.estimatedBudget) * 100 : 0;
+  const displayedCards = cards.filter(c => {
+    const dayMatch = selectedDay === 0 || c.day === selectedDay;
+    const layerMatch = activeLayer === 'all' || c.type === activeLayer;
+    return dayMatch && layerMatch;
+  });
+
+  // Dynamic Budget Calculation
+  const calculatedBudgetUsed = cards.reduce((sum, card) => sum + (card.data?.price || 0), 0);
+  const estimatedBudget = trip?.summary?.estimatedBudget || (calculatedBudgetUsed > 0 ? Math.ceil(calculatedBudgetUsed * 1.2 / 500) * 500 : 2500);
+  const budgetProgress = estimatedBudget > 0 ? Math.min((calculatedBudgetUsed / estimatedBudget) * 100, 100) : 0;
 
   return (
     <div className="h-screen w-screen bg-background text-foreground flex overflow-hidden font-sans">
@@ -128,11 +137,11 @@ export default function PlannerPage() {
             </div>
 
             <div className="space-y-1">
-              <LayerItem icon={LayoutGrid} label="Itinerary" count={trip?.days || 0} active />
-              <LayerItem icon={BedDouble} label="Stays" count={cards.filter(c => c.type === 'stay').length} color="text-orange-400" />
-              <LayerItem icon={Camera} label="Activities" count={cards.filter(c => c.type === 'activity').length} color="text-blue-400" />
-              <LayerItem icon={Train} label="Transport" count={cards.filter(c => c.type === 'transport').length} color="text-emerald-400" />
-              <LayerItem icon={CreditCard} label="Budget" value={trip?.summary ? `$${trip.summary.budgetUsed}` : '-'} color="text-purple-400" />
+              <LayerItem icon={LayoutGrid} label="Itinerary" count={trip?.days || 0} active={activeLayer === 'all'} onClick={() => setActiveLayer('all')} />
+              <LayerItem icon={BedDouble} label="Stays" count={cards.filter(c => c.type === 'stay').length} color="text-orange-400" active={activeLayer === 'stay'} onClick={() => setActiveLayer('stay')} />
+              <LayerItem icon={Camera} label="Activities" count={cards.filter(c => c.type === 'activity').length} color="text-blue-400" active={activeLayer === 'activity'} onClick={() => setActiveLayer('activity')} />
+              <LayerItem icon={Train} label="Transport" count={cards.filter(c => c.type === 'transport').length} color="text-emerald-400" active={activeLayer === 'transport'} onClick={() => setActiveLayer('transport')} />
+              <LayerItem icon={CreditCard} label="Budget" value={`$${calculatedBudgetUsed}`} color="text-purple-400" />
             </div>
           </div>
 
@@ -162,7 +171,7 @@ export default function PlannerPage() {
                     onClick={() => setSelectedDay(i + 1)}
                   >
                     <span className="font-medium">Day {i + 1}</span>
-                    <span className="text-xs text-muted-foreground">Kyoto</span>
+                    <span className="text-xs text-muted-foreground">{trip?.destination?.split(',')[0] || "City"}</span>
                   </button>
                 ))}
               </div>
@@ -193,6 +202,22 @@ export default function PlannerPage() {
             <div className="flex items-center gap-2">
               <h1 className="font-bold text-sm tracking-wide">{trip?.title || "New Trip"}</h1>
               <Badge variant="secondary" className="bg-muted text-muted-foreground border-0 text-[10px] px-1.5 h-5">DRAFT</Badge>
+              {trip?.visaRequirement && (
+                <div title={trip.visaDetails}>
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "text-[10px] px-1.5 h-5 uppercase border-0 cursor-help",
+                      trip.visaRequirement === 'visa-free' ? 'bg-emerald-500/10 text-emerald-500' :
+                        trip.visaRequirement === 'visa-on-arrival' ? 'bg-amber-500/10 text-amber-500' :
+                          trip.visaRequirement === 'visa-required' ? 'bg-rose-500/10 text-rose-500' :
+                            'bg-slate-500/10 text-slate-500'
+                    )}
+                  >
+                    {trip.visaRequirement.replace('-', ' ')}
+                  </Badge>
+                </div>
+              )}
             </div>
           </div>
 
@@ -215,17 +240,16 @@ export default function PlannerPage() {
           {/* Right Actions */}
           <div className="flex items-center gap-4">
             {/* Budget Bar */}
-            {trip && trip.summary && (
-              <div className="hidden lg:flex items-center gap-3 bg-muted px-3 py-1.5 rounded-full border border-border/10">
-                <div className="text-xs font-medium">
-                  <span className="text-foreground">${trip.summary.budgetUsed}</span>
-                  <span className="text-muted-foreground"> / ${trip.summary.estimatedBudget}</span>
-                </div>
-                <div className="w-20 h-1.5 bg-background rounded-full overflow-hidden">
-                  <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${budgetProgress}%` }} />
-                </div>
+            {/* Budget Bar */}
+            <div className="hidden lg:flex items-center gap-3 bg-muted px-3 py-1.5 rounded-full border border-border/10">
+              <div className="text-xs font-medium">
+                <span className="text-foreground">${calculatedBudgetUsed}</span>
+                <span className="text-muted-foreground"> / ${estimatedBudget}</span>
               </div>
-            )}
+              <div className="w-20 h-1.5 bg-background rounded-full overflow-hidden">
+                <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${budgetProgress}%` }} />
+              </div>
+            </div>
 
             <ModeToggle />
 
@@ -239,8 +263,8 @@ export default function PlannerPage() {
         <div className="flex-1 relative bg-background pt-14">
           {viewMode === 'map' ? (
             <Map
-              center={[135.7681, 35.0116]} // Default to Kyoto for demo
-              zoom={12}
+              center={[0, 20]} // Default to World View
+              zoom={1.5}
               className="w-full h-full"
               styles={{
                 dark: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
@@ -248,7 +272,11 @@ export default function PlannerPage() {
               }}
             >
               <MapControls position="bottom-right" />
-              <CountryLayer mode="destination" />
+              <CountryLayer
+                mode={trip?.country ? 'selected' : 'destination'}
+                selectedCountryName={trip?.country}
+                visaBucketsByCountryName={trip?.country && trip?.visaRequirement ? { [trip.country]: trip.visaRequirement } : undefined}
+              />
               <RoutesLayer cards={cards} enabled={true} visibleDay={selectedDay} />
 
               {/* Dynamic Markers */}
@@ -343,7 +371,7 @@ export default function PlannerPage() {
                     </div>
                     <div className="w-px h-10 bg-border/50" />
                     <div className="flex flex-col items-center">
-                      <span className="text-2xl font-serif text-foreground">${trip?.summary?.estimatedBudget || 2500}</span>
+                      <span className="text-2xl font-serif text-foreground">${estimatedBudget}</span>
                       <span className="text-xs uppercase tracking-wider">Est. Cost</span>
                     </div>
                   </div>
@@ -351,7 +379,10 @@ export default function PlannerPage() {
 
                 {trip && Array.from({ length: trip.days }).map((_, i) => {
                   const dayNum = i + 1;
-                  const dayCards = cards.filter(c => c.day === dayNum).sort((a, b) => (a.data.startTime || '').localeCompare(b.data.startTime || ''));
+                  const dayCards = cards.filter(c =>
+                    c.day === dayNum &&
+                    (activeLayer === 'all' || c.type === activeLayer)
+                  ).sort((a, b) => (a.data.startTime || '').localeCompare(b.data.startTime || ''));
 
                   if (selectedDay !== 0 && selectedDay !== dayNum) return null;
 
@@ -368,7 +399,7 @@ export default function PlannerPage() {
                         <div className="flex items-baseline gap-4">
                           <span className="font-serif text-4xl md:text-5xl text-foreground/20 font-light group-hover:text-primary/20 transition-colors">0{dayNum}</span>
                           <div>
-                            <h2 className="text-xl md:text-2xl font-bold font-serif">Kyoto Exploration</h2>
+                            <h2 className="text-xl md:text-2xl font-bold font-serif">{trip?.destination?.split(',')[0] || "City"} Exploration</h2>
                             <span className="text-sm text-muted-foreground font-medium uppercase tracking-wider">October 12 • Saturday</span>
                           </div>
                         </div>
@@ -572,12 +603,14 @@ export default function PlannerPage() {
 }
 
 // Helper Component for Layers
-function LayerItem({ icon: Icon, label, count, value, active, color }: any) {
+function LayerItem({ icon: Icon, label, count, value, active, color, onClick }: any) {
   return (
-    <div className={cn(
-      "group flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-all",
-      active ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-    )}>
+    <div
+      onClick={onClick}
+      className={cn(
+        "group flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-all",
+        active ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+      )}>
       <div className="flex items-center gap-3">
         <Icon className={cn("h-4 w-4", color)} />
         <span className="text-sm font-medium">{label}</span>

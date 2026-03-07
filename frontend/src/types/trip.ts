@@ -96,6 +96,9 @@ export type TripMetadata = {
         west: number;
     };
     currency?: string;
+    country?: string;
+    visaRequirement?: 'visa-free' | 'visa-on-arrival' | 'visa-required' | 'other';
+    visaDetails?: string;
 };
 
 export type Trip = TripMetadata & {
