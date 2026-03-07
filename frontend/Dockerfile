@@ -4,6 +4,8 @@ FROM node:22-alpine AS base
 WORKDIR /app
 COPY package*.json ./
 RUN npm install
+# Explicitly install Cloudinary to ensure it's available in the Docker build
+RUN npm install @cloudinary/url-gen @cloudinary/react
 
 FROM base AS development
 COPY . .

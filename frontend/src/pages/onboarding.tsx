@@ -90,37 +90,40 @@ export default function OnboardingPage() {
   }
 
   return (
-    <div className="min-h-screen relative flex items-center justify-center overflow-hidden">
-      {/* Dynamic Background Map/Pattern */}
-      <div className="absolute inset-0 z-0 bg-slate-900 border-border">
-          <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-blue-500/20 via-transparent to-transparent"></div>
-          {/* We can use a simplified map pattern here instead of a heavy map load */}
+    <div className="min-h-screen relative flex flex-col font-sans selection:bg-primary selection:text-white">
+      {/* Bold Header / Poster background */}
+      <div className="absolute top-0 left-0 w-full h-[40vh] bg-primary z-0">
+        <div className="absolute top-10 -left-10 w-64 h-64 rounded-full bg-white opacity-5 pointer-events-none" />
+        <div className="absolute top-20 right-10 w-32 h-32 rotate-12 bg-white opacity-10 pointer-events-none" />
       </div>
 
-      <div className="relative z-10 w-full max-w-xl mx-auto px-4 sm:px-6">
-        <div className="text-center mb-8 backdrop-blur-sm bg-background/50 p-6 rounded-2xl border border-white/10 shadow-2xl">
-          <div className="inline-flex bg-white p-1 rounded-full mb-4 shadow-lg border border-border w-16 h-16 items-center justify-center overflow-hidden">
+      <div className="relative z-10 w-full max-w-xl mx-auto px-4 sm:px-6 py-12 md:py-24">
+        {/* Welcome Block - Flat & Bold */}
+        <div className="text-center mb-12 bg-white p-10 rounded-lg border-b-8 border-gray-100">
+          <div className="inline-flex bg-white p-1 rounded-full mb-6 shadow-none border-4 border-gray-100 w-20 h-20 items-center justify-center overflow-hidden transition-transform duration-200 hover:scale-110">
             <img src="/logo.png" alt="Adealy" className="w-full h-full object-cover" />
           </div>
-          <h1 className="text-3xl font-bold tracking-tight text-foreground">Welcome to Adealy</h1>
-          <p className="text-muted-foreground mt-2 text-md">
+          <h1 className="text-4xl font-black tracking-tighter text-gray-900 uppercase">
+            Welcome to Adealy
+          </h1>
+          <p className="text-gray-500 mt-3 text-lg font-medium">
             Let's setup your traveler profile before we take off.
           </p>
         </div>
 
-        <Card className="shadow-lg border-primary/20">
-          <CardHeader>
-            <CardTitle>Travel Details</CardTitle>
-            <CardDescription>
+        <Card className="shadow-none border-4 border-gray-100 bg-white p-2">
+          <CardHeader className="pt-8 px-8 pb-4">
+            <CardTitle className="text-2xl font-black tracking-tight text-gray-900">TRAVEL DETAILS</CardTitle>
+            <CardDescription className="text-gray-500 font-medium">
               This information will be securely synced with your account.
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            <form onSubmit={handleSubmit} className="space-y-6">
+          <CardContent className="p-8 pt-4">
+            <form onSubmit={handleSubmit} className="space-y-8">
               
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="firstName">First Name</Label>
+              <div className="grid grid-cols-2 gap-6">
+                <div className="space-y-3">
+                  <Label htmlFor="firstName" className="text-xs font-black uppercase tracking-widest text-gray-400">First Name</Label>
                   <Input 
                     id="firstName" 
                     name="firstName" 
@@ -128,10 +131,11 @@ export default function OnboardingPage() {
                     onChange={handleChange} 
                     required 
                     placeholder="John"
+                    className="h-14 bg-gray-100 border-none rounded-md px-6 font-bold text-gray-900 focus:bg-white focus:ring-0 focus:border-4 focus:border-primary transition-all"
                   />
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="lastName">Last Name</Label>
+                <div className="space-y-3">
+                  <Label htmlFor="lastName" className="text-xs font-black uppercase tracking-widest text-gray-400">Last Name</Label>
                   <Input 
                     id="lastName" 
                     name="lastName" 
@@ -139,12 +143,13 @@ export default function OnboardingPage() {
                     onChange={handleChange} 
                     required 
                     placeholder="Doe"
+                    className="h-14 bg-gray-100 border-none rounded-md px-6 font-bold text-gray-900 focus:bg-white focus:ring-0 focus:border-4 focus:border-primary transition-all"
                   />
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="departureAirport">Home Airport (Code)</Label>
+              <div className="space-y-3">
+                <Label htmlFor="departureAirport" className="text-xs font-black uppercase tracking-widest text-gray-400">Home Airport (Code)</Label>
                 <Input 
                   id="departureAirport" 
                   name="departureAirport" 
@@ -153,24 +158,25 @@ export default function OnboardingPage() {
                   required 
                   placeholder="e.g. JFK"
                   maxLength={3}
-                  className="uppercase"
+                  className="h-14 bg-gray-100 border-none rounded-md px-6 font-bold text-gray-900 uppercase focus:bg-white focus:ring-0 focus:border-4 focus:border-primary transition-all"
                 />
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="passportCountry">Passport Country of Origin</Label>
+              <div className="space-y-3">
+                <Label htmlFor="passportCountry" className="text-xs font-black uppercase tracking-widest text-gray-400">Passport Country of Origin</Label>
                 <Input 
                   id="passportCountry" 
                   name="passportCountry" 
                   value={formData.passportCountry} 
                   onChange={handleChange} 
                   required 
-                  placeholder="e.g. United States"
+                  placeholder="United States"
+                  className="h-14 bg-gray-100 border-none rounded-md px-6 font-bold text-gray-900 focus:bg-white focus:ring-0 focus:border-4 focus:border-primary transition-all"
                 />
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="passportExpiryDate">Passport Expiry Date</Label>
+              <div className="space-y-3">
+                <Label htmlFor="passportExpiryDate" className="text-xs font-black uppercase tracking-widest text-gray-400">Passport Expiry Date</Label>
                 <Input 
                   id="passportExpiryDate" 
                   name="passportExpiryDate" 
@@ -178,17 +184,18 @@ export default function OnboardingPage() {
                   value={formData.passportExpiryDate} 
                   onChange={handleChange} 
                   required 
+                  className="h-14 bg-gray-100 border-none rounded-md px-6 font-bold text-gray-900 focus:bg-white focus:ring-0 focus:border-4 focus:border-primary transition-all"
                 />
               </div>
 
-              <Button type="submit" className="w-full" disabled={isSubmitting}>
+              <Button type="submit" className="w-full h-16 text-xl font-black bg-primary text-white rounded-md transition-all duration-200 hover:scale-[1.03] active:scale-95 border-none shadow-none" disabled={isSubmitting}>
                 {isSubmitting ? (
                   <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Saving Profile...
+                    <Loader2 className="mr-2 h-6 w-6 animate-spin" />
+                    SAVING PROFILE...
                   </>
                 ) : (
-                  'Save & Continue to Planner'
+                  'COMPLETE PROFILE'
                 )}
               </Button>
             </form>

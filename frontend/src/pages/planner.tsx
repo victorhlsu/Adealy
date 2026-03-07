@@ -1300,10 +1300,34 @@ function LayerItem({ icon: Icon, label, count, value, active, color, onClick }: 
 
 function MarkdownText({ content }: { content: string }) {
   if (!content) return null;
+  
+  // Custom parser to handle bold text and images
+  const lines = content.split('\\n');
+  
   return (
-    <div className="space-y-2 leading-relaxed">
-      {content.split('\\n').map((line, i) => {
+    <div className="space-y-3 leading-relaxed">
+      {lines.map((line, i) => {
         if (!line.trim()) return <div key={i} className="h-2" />;
+        
+        // Handle images: Detect ![alt](url) or standalone image URLs
+        const imgMatch = line.match(/!\[(.*?)\]\((.*?)\)/) || line.match(/(https?:\/\/.*\.(?:png|jpg|jpeg|gif|webp)(?:\?.*)?)/i);
+        
+        if (imgMatch) {
+          const url = imgMatch[2] || imgMatch[1];
+          const alt = imgMatch[1] || 'AI Image';
+          
+          return (
+            <div key={i} className="rounded-lg overflow-hidden my-2 border border-border/30 group/img rotate-1">
+               <img 
+                 src={getOptimizedImageUrl(url, 600, 300)} 
+                 alt={alt} 
+                 className="w-full h-auto object-cover transition-transform duration-500 group-hover/img:scale-110"
+                 loading="lazy"
+               />
+            </div>
+          );
+        }
+
         const parts = line.split(/(\*\*.*?\*\*)/g);
         return (
           <p key={i}>

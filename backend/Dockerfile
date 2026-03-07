@@ -29,6 +29,8 @@ RUN python3 -m playwright install chromium
 # ── Node.js app ────────────────────────────────────────────────────────────────
 COPY package*.json ./
 RUN npm install
+# Explicitly install Cloudinary for server-side image processing
+RUN npm install cloudinary
 
 # Copy full backend source (routes, assets, workers, supabase, etc.)
 COPY . .

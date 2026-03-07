@@ -55,99 +55,58 @@
 }
 
 :root {
-  --button-outline: rgba(0, 0, 0, 0.1);
-  --badge-outline: rgba(0, 0, 0, 0.05);
-  --opaque-button-border-intensity: -8;
-
-  --elevate-1: rgba(0, 0, 0, 0.03);
-  --elevate-2: rgba(0, 0, 0, 0.08);
-
-  /* Clean White Light Mode (Monf inspired) */
+  /* Flat Bold Digital Palette */
   --background: 0 0% 100%;
-  --foreground: 240 10% 3.9%;
+  --foreground: 224 71% 4%; /* Near Black */
 
   --card: 0 0% 100%;
-  --card-foreground: 240 10% 3.9%;
+  --card-foreground: 224 71% 4%;
 
   --popover: 0 0% 100%;
-  --popover-foreground: 240 10% 3.9%;
+  --popover-foreground: 224 71% 4%;
 
-  --primary: 210 82% 44%;
-  /* Blue 600 */
-  --primary-foreground: 0 0% 98%;
+  --primary: 217 91% 60%; /* Bold Blue */
+  --primary-foreground: 0 0% 100%;
 
-  --secondary: 240 5% 96%;
-  --secondary-foreground: 240 6% 10%;
+  --secondary: 160 84% 39%; /* Emerald Green */
+  --secondary-foreground: 0 0% 100%;
 
-  --muted: 240 5% 96%;
-  --muted-foreground: 240 4% 46%;
+  --muted: 220 14% 96%; /* Gray 100 */
+  --muted-foreground: 220 9% 46%;
 
-  --accent: 240 5% 96%;
-  --accent-foreground: 240 6% 10%;
+  --accent: 38 92% 50%; /* Amber/Orange */
+  --accent-foreground: 0 0% 100%;
 
   --destructive: 0 84% 60%;
   --destructive-foreground: 0 0% 98%;
 
-  --border: 240 6% 90%;
-  --input: 240 6% 90%;
-  --ring: 210 82% 44%;
+  --border: 220 13% 91%; /* Gray 200 */
+  --input: 220 13% 91%;
+  --ring: 217 91% 60%;
 
-  --sidebar: 240 5% 98%;
-  /* Slightly distinct sidebar for light mode */
-  --sidebar-foreground: 240 6% 10%;
-  --sidebar-border: 240 6% 90%;
-  --sidebar-primary: 210 82% 44%;
-  /* Blue 600 */
-  --sidebar-primary-foreground: 0 0% 98%;
-  --sidebar-accent: 240 5% 94%;
-  --sidebar-accent-foreground: 240 6% 10%;
-  --sidebar-ring: 210 82% 44%;
+  --sidebar: 220 14% 98%;
+  --sidebar-foreground: 224 71% 4%;
+  --sidebar-border: 220 13% 91%;
+  --sidebar-primary: 217 91% 60%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 220 14% 94%;
+  --sidebar-accent-foreground: 224 71% 4%;
+  --sidebar-ring: 217 91% 60%;
 
-  --chart-1: 210 82% 44%;
-  --chart-2: 12 76% 61%;
-  --chart-3: 173 58% 39%;
-  --chart-4: 43 74% 66%;
-  --chart-5: 27 87% 67%;
+  --font-sans: "Outfit", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-serif: "Outfit", ui-serif, Georgia, serif; /* Unified to Outfit for Flat Look */
 
-  --font-sans: "Outfit", "Inter", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Apple Color Emoji",
-    "Segoe UI Emoji";
-  --font-serif: "Fraunces", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --radius: 0.375rem; /* 6px rounded-md */
 
-  --radius: 0.9rem;
+  --shadow-none: 0 0 #0000;
+  --shadow-sm: var(--shadow-none);
+  --shadow: var(--shadow-none);
+  --shadow-md: var(--shadow-none);
+  --shadow-lg: var(--shadow-none);
+  --shadow-xl: var(--shadow-none);
+  --shadow-2xl: var(--shadow-none);
 
-  --shadow-2xs: 0px 1px 0px 0px hsl(220 20% 20% / 0.04);
-  --shadow-xs: 0px 1px 0px 0px hsl(220 20% 20% / 0.05);
-  --shadow-sm: 0px 1px 0px 0px hsl(220 20% 20% / 0.06), 0px 10px 30px -20px hsl(220 20% 20% / 0.25);
-  --shadow: 0px 1px 0px 0px hsl(220 20% 20% / 0.06), 0px 14px 40px -24px hsl(220 20% 20% / 0.30);
-  --shadow-md: 0px 1px 0px 0px hsl(220 20% 20% / 0.08), 0px 16px 48px -26px hsl(220 20% 20% / 0.34);
-  --shadow-lg: 0px 1px 0px 0px hsl(220 20% 20% / 0.10), 0px 22px 60px -30px hsl(220 20% 20% / 0.38);
-  --shadow-xl: 0px 1px 0px 0px hsl(220 20% 20% / 0.10), 0px 30px 90px -40px hsl(220 20% 20% / 0.40);
-  --shadow-2xl: 0px 1px 0px 0px hsl(220 20% 20% / 0.12), 0px 40px 120px -48px hsl(220 20% 20% / 0.45);
-
-  --tracking-normal: 0em;
   --spacing: 0.25rem;
-
-  --sidebar-primary-border: hsl(var(--sidebar-primary));
-  --sidebar-primary-border: hsl(from hsl(var(--sidebar-primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
-
-  --sidebar-accent-border: hsl(var(--sidebar-accent));
-  --sidebar-accent-border: hsl(from hsl(var(--sidebar-accent)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
-
-  --primary-border: hsl(var(--primary));
-  --primary-border: hsl(from hsl(var(--primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
-
-  --secondary-border: hsl(var(--secondary));
-  --secondary-border: hsl(from hsl(var(--secondary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
-
-  --muted-border: hsl(var(--muted));
-  --muted-border: hsl(from hsl(var(--muted)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
-
-  --accent-border: hsl(var(--accent));
-  --accent-border: hsl(from hsl(var(--accent)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
-
-  --destructive-border: hsl(var(--destructive));
-  --destructive-border: hsl(from hsl(var(--destructive)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
 }
 
 .dark {

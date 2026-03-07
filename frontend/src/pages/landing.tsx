@@ -1,6 +1,6 @@
 import { useAuth0 } from '@auth0/auth0-react';
 import { Button } from '@/components/ui/button';
-import { Globe, ShieldCheck } from 'lucide-react';
+import { Globe, ShieldCheck, Zap } from 'lucide-react';
 import { Link } from 'wouter';
 
 export default function LandingPage() {
@@ -15,27 +15,33 @@ export default function LandingPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
-      <header className="px-6 py-4 flex justify-between items-center border-b bg-card/50 backdrop-blur-sm sticky top-0 z-50">
-        <div className="flex items-center gap-2">
-          <div className="bg-white p-1 rounded-xl shadow-sm border border-border overflow-hidden w-10 h-10 flex items-center justify-center">
+    <div className="min-h-screen bg-white flex flex-col font-sans selection:bg-primary selection:text-white">
+      {/* Header - Flat Bold */}
+      <header className="px-6 py-6 flex justify-between items-center border-b-4 border-gray-100 bg-white sticky top-0 z-50">
+        <div className="flex items-center gap-3 group cursor-pointer" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
+          <div className="bg-white p-1 rounded-md border-2 border-gray-200 overflow-hidden w-12 h-12 flex items-center justify-center transition-transform duration-200 group-hover:scale-110">
             <img src="/logo.png" alt="Adealy" className="w-full h-full object-cover" />
           </div>
-          <span className="text-xl font-bold bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
+          <span className="text-2xl font-black tracking-tighter text-gray-900">
             Adealy
           </span>
         </div>
-        <nav>
+        <nav className="flex items-center gap-6">
           {isAuthenticated ? (
             <Link href="/planner">
-              <Button>Go to Planner</Button>
+              <Button className="h-12 px-6 font-bold transition-all duration-200 hover:scale-105 active:scale-95">
+                Go to Planner
+              </Button>
             </Link>
           ) : (
-            <div className="space-x-4">
-              <Button variant="ghost" onClick={() => loginWithRedirect()}>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" className="font-bold hover:bg-gray-100 h-12 px-6" onClick={() => loginWithRedirect()}>
                 Log In
               </Button>
-              <Button onClick={() => loginWithRedirect({ authorizationParams: { screen_hint: 'signup' } })}>
+              <Button 
+                className="h-12 px-8 font-bold bg-primary text-white transition-all duration-200 hover:scale-105 active:scale-95" 
+                onClick={() => loginWithRedirect({ authorizationParams: { screen_hint: 'signup' } })}
+              >
                 Sign Up
               </Button>
             </div>
@@ -43,63 +49,122 @@ export default function LandingPage() {
         </nav>
       </header>
 
-      <main className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-12 max-w-5xl mx-auto">
-        <div className="space-y-6 animate-in slide-in-from-bottom-8 duration-700">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary/10 text-primary text-sm font-medium">
-            <Globe className="w-4 h-4" />
-            <span>Your Next Adventure Awaits</span>
-          </div>
-          <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight">
-            Seamless Travel, <br />
-            <span className="text-primary">Effortless Planning.</span>
-          </h1>
-          <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
-            Organize your itineraries, track visas, and fly hassle-free. The smartest way to manage your international travel.
-          </p>
-          
-          <div className="pt-8">
-            {isAuthenticated ? (
-               <Link href="/planner">
-                 <Button size="lg" className="h-14 px-8 text-lg rounded-full">
-                   Continue Planning
-                   <Globe className="ml-2 w-5 h-5" />
-                 </Button>
-               </Link>
-            ) : (
-              <Button 
-                size="lg" 
-                className="h-14 px-8 text-lg rounded-full shadow-lg shadow-primary/25 hover:shadow-primary/40 transition-all"
-                onClick={() => loginWithRedirect({ authorizationParams: { screen_hint: 'signup' } })}
-              >
-                Start Your Journey Now
-              </Button>
-            )}
-          </div>
-        </div>
+      <main className="flex-1 flex flex-col items-center">
+        {/* Hero Section - Bold Primary Block */}
+        <section className="w-full bg-primary py-24 md:py-32 px-6 relative overflow-hidden flex flex-col items-center justify-center text-center">
+          {/* Background Decorative Shapes */}
+          <div className="absolute top-10 -left-20 w-80 h-80 rounded-full bg-white opacity-5 pointer-events-none" />
+          <div className="absolute -bottom-20 -right-20 w-96 h-96 rounded-full bg-white opacity-10 pointer-events-none" />
+          <div className="absolute top-40 right-20 w-24 h-24 rotate-45 bg-white opacity-5 pointer-events-none" />
 
-        <div className="grid md:grid-cols-3 gap-8 pt-16 border-t w-full">
-          <div className="flex flex-col items-center text-center space-y-3 p-6 rounded-2xl bg-card border shadow-sm">
-            <div className="bg-primary/10 p-3 rounded-full">
-              <Globe className="w-6 h-6 text-primary" />
+          <div className="max-w-4xl relative z-10 space-y-8 animate-in slide-in-from-bottom-12 duration-700">
+            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/20 text-white text-xs font-black uppercase tracking-widest">
+              <Globe className="w-4 h-4" />
+              <span>Version 2.0 Is Here</span>
             </div>
-            <h3 className="font-semibold text-lg">Smart Itineraries</h3>
-            <p className="text-sm text-muted-foreground">Keep all your flights and hotel bookings in one secure, easily accessible place.</p>
-          </div>
-          <div className="flex flex-col items-center text-center space-y-3 p-6 rounded-2xl bg-card border shadow-sm">
-            <div className="bg-primary/10 p-3 rounded-full">
-              <ShieldCheck className="w-6 h-6 text-primary" />
+            
+            <h1 className="text-6xl md:text-8xl font-black text-white tracking-tighter leading-[0.9]">
+              Travel Planning,<br />
+              <span className="text-white/70">Simplified.</span>
+            </h1>
+            
+            <p className="text-xl md:text-2xl text-white/90 font-medium max-w-2xl mx-auto leading-relaxed">
+              The smartest way to design your international itineraries. 
+              Flat. Fast. Functional. Completely AI-driven.
+            </p>
+            
+            <div className="pt-8 flex flex-col sm:flex-row items-center justify-center gap-4">
+              {isAuthenticated ? (
+                 <Link href="/planner">
+                   <Button className="h-16 px-10 text-xl font-black bg-white text-primary rounded-md transition-all duration-200 hover:scale-110 active:scale-95 shadow-none border-none">
+                     Continue Planning
+                   </Button>
+                 </Link>
+              ) : (
+                <Button 
+                  className="h-16 px-10 text-xl font-black bg-white text-primary rounded-md transition-all duration-200 hover:scale-110 active:scale-95 shadow-none border-none"
+                  onClick={() => loginWithRedirect({ authorizationParams: { screen_hint: 'signup' } })}
+                >
+                  Start Your Journey Now
+                </Button>
+              )}
             </div>
-            <h3 className="font-semibold text-lg">Travel Document Hub</h3>
-            <p className="text-sm text-muted-foreground">Safely store your passport and visa details for quick reference anywhere in the world.</p>
           </div>
-          <div className="flex flex-col items-center text-center space-y-3 p-6 rounded-2xl bg-card border shadow-sm">
-            <div className="bg-primary/10 p-3 rounded-full">
-              <Globe className="w-6 h-6 text-primary" />
+        </section>
+
+        {/* Features Section - Solid White with Color Block Cards */}
+        <section className="w-full py-24 md:py-32 px-6 bg-white flex flex-col items-center">
+          <div className="max-w-6xl w-full grid md:grid-cols-3 gap-8">
+            <div className="flex flex-col items-start text-left space-y-4 p-10 rounded-lg bg-blue-50 transition-all duration-200 hover:scale-105 group cursor-pointer border-b-4 border-blue-100">
+              <div className="bg-white p-4 rounded-full border-2 border-primary text-primary transition-transform duration-200 group-hover:scale-110">
+                <Globe className="w-8 h-8" />
+              </div>
+              <h3 className="font-black text-2xl tracking-tight text-gray-900">Smart Itineraries</h3>
+              <p className="text-gray-600 font-medium leading-relaxed">
+                Organize flights, hotels, and activities in a single, high-speed interface. No clutter, just travel.
+              </p>
             </div>
-            <h3 className="font-semibold text-lg">Global Connectivity</h3>
-            <p className="text-sm text-muted-foreground">Access your plans offline and get real-time updates when connected.</p>
+            
+            <div className="flex flex-col items-start text-left space-y-4 p-10 rounded-lg bg-emerald-50 transition-all duration-200 hover:scale-105 group cursor-pointer border-b-4 border-emerald-100">
+              <div className="bg-white p-4 rounded-full border-2 border-secondary text-secondary transition-transform duration-200 group-hover:scale-110">
+                <ShieldCheck className="w-8 h-8" />
+              </div>
+              <h3 className="font-black text-2xl tracking-tight text-gray-900">Document Vault</h3>
+              <p className="text-gray-600 font-medium leading-relaxed">
+                Securely store passport and visa details. Access them instantly, anywhere in the world.
+              </p>
+            </div>
+            
+            <div className="flex flex-col items-start text-left space-y-4 p-10 rounded-lg bg-amber-50 transition-all duration-200 hover:scale-105 group cursor-pointer border-b-4 border-amber-100">
+              <div className="bg-white p-4 rounded-full border-2 border-amber-500 text-amber-500 transition-transform duration-200 group-hover:scale-110">
+                <Zap className="w-8 h-8" />
+              </div>
+              <h3 className="font-black text-2xl tracking-tight text-gray-900">AI Optimization</h3>
+              <p className="text-gray-600 font-medium leading-relaxed">
+                Powered by Gemini. Get real-time routing, optimized for speed and budget automatically.
+              </p>
+            </div>
           </div>
-        </div>
+        </section>
+
+        {/* CTA Section - Bold Amber Block */}
+        <section className="w-full bg-amber-500 py-24 px-6 flex flex-col items-center text-center">
+          <div className="max-w-3xl space-y-8">
+            <h2 className="text-5xl md:text-7xl font-black text-white tracking-tighter leading-none">
+              READY TO<br />DEPART?
+            </h2>
+            <p className="text-xl md:text-2xl text-white font-bold opacity-90">
+              Join thousands of travelers planning with Adealy.
+            </p>
+            <Button 
+               className="h-16 px-12 text-xl font-black bg-gray-900 text-white rounded-md transition-all duration-200 hover:scale-110 active:scale-95 border-none"
+               onClick={() => loginWithRedirect({ authorizationParams: { screen_hint: 'signup' } })}
+            >
+              Start Free Trial
+            </Button>
+          </div>
+        </section>
+
+        {/* Footer - Solid Dark Gray */}
+        <footer className="w-full bg-gray-900 py-16 px-6 text-white flex flex-col items-center">
+          <div className="max-w-6xl w-full flex flex-col md:flex-row justify-between items-center gap-8 border-b-2 border-white/5 pb-12">
+            <div className="flex items-center gap-3">
+               <div className="bg-white p-1 rounded-md w-10 h-10 flex items-center justify-center">
+                 <img src="/logo.png" alt="Adealy" className="w-full h-full object-cover" />
+               </div>
+               <span className="text-2xl font-black tracking-tighter italic">Adealy</span>
+            </div>
+            <div className="flex gap-8 text-sm font-bold opacity-60">
+              <span className="hover:opacity-100 cursor-pointer transition-opacity">Privacy</span>
+              <span className="hover:opacity-100 cursor-pointer transition-opacity">Terms</span>
+              <span className="hover:opacity-100 cursor-pointer transition-opacity">Twitter</span>
+              <span className="hover:opacity-100 cursor-pointer transition-opacity">Status</span>
+            </div>
+          </div>
+          <div className="pt-8 text-xs font-bold opacity-30 uppercase tracking-[0.2em]">
+            © 2026 ADEALY LABS. ALL RIGHTS RESERVED.
+          </div>
+        </footer>
       </main>
     </div>
   );
