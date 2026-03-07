@@ -1,7 +1,5 @@
 const { createClient } = require('@supabase/supabase-js');
-const dotnetConfig = require('dotenv');
-const path = require('path');
-dotnetConfig.config({ path: path.resolve(__dirname, '../../.env') });
+// Environment variables are loaded in server.js
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE;

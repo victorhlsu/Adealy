@@ -1,8 +1,7 @@
 const { GoogleGenAI } = require('@google/genai');
 const config = require("../constants/geminiConfiguration")
 const { getCachedResponse, cacheResponse } = require('../supabase/gemini_cache');
-const dotenv = require('dotenv');
-dotenv.config();
+// Environment variables are loaded in server.js
 
 // const apiKey = process.env.GEMINI_API_KEY;
 
@@ -10,7 +9,7 @@ if (!config.MODEL) {
     throw new Error('No gemini model found in path ./constants/ai');
 }
 
-const ai = new GoogleGenAI({apiKey: process.env.GEMINI_API_KEY});
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 
 async function generate(prompt, promptType = 'PROMPT') {

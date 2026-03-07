@@ -1,8 +1,6 @@
 const { GoogleGenAI } = require('@google/genai');
 const { supabase } = require('../../supabase/client');
-const dotenv = require('dotenv');
-const path = require('path');
-dotenv.config({ path: path.resolve(__dirname, '../../../../.env') });
+// Environment variables are loaded in server.js
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -44,6 +42,21 @@ If you generate a trip, it MUST follow this specific JSON schema format exactly:
                 }
             },
             {
+                "id": "card_trans_001",
+                "type": "transport",
+                "layer": "transport",
+                "day": 1,
+                "name": "Transit to Shrine",
+                "data": {
+                    "mode": "transit",
+                    "price": 2,
+                    "startTime": "08:30",
+                    "endTime": "09:00",
+                    "from": { "name": "Tawaraya Ryokan", "lat": 35.0116, "lng": 135.7681, "cardId": "card_stay_001" },
+                    "to": { "name": "Fushimi Inari Shrine", "lat": 34.9671, "lng": 135.7727, "cardId": "card_act_001" }
+                }
+            },
+            {
                 "id": "card_act_001",
                 "type": "activity",
                 "layer": "activities",
@@ -64,12 +77,24 @@ If you generate a trip, it MUST follow this specific JSON schema format exactly:
 
  Use realistic locations, coordinates, and prices for whatever the user requested. If any properties don't make sense to include, you can omit them, but keep the core ones like id, type, layer, day (int), name, position, and data.
 
-CRITICAL INSTRUCTION - BUDGET AND FLIGHTS: If the user explicitly specifies a budget or budget range, you MUST set \`trip.summary.estimatedBudget\` strictly to that exact numeric amount WITHOUT ANY ROUNDING (e.g., if the user says 2576, it MUST be exactly 2576, NOT 2575). Otherwise, you MUST generate a realistic \`estimatedBudget\` based on the destination and duration. You MUST ALWAYS include at least one 'transport' card for round-trip flights or major transit to the destination, and include a realistic flight price in its \`data.price\` field. All cards with a monetary cost (stays, activities, flights) MUST have a realistic \`data.price\` number so the frontend can calculate the total budget accurately.
+CRITICAL INSTRUCTION - BUDGET AND FLIGHTS: If the user explicitly specifies a budget or budget range, you MUST set \`trip.summary.estimatedBudget\` strictly to that exact numeric amount WITHOUT ANY ROUNDING (e.g., if the user says 2576, it MUST be exactly 2576, NOT 2575). Otherwise, you MUST generate a realistic \`estimatedBudget\` based on the destination and duration. You MUST ALWAYS include at least one 'transport' card for round-trip flights or major transit to the destination, and include a realistic flight price in its \`data.price\` field. All cards with a monetary cost (stays, activities, flights, local transit) MUST have a realistic \`data.price\` number so the frontend can calculate the total budget accurately.
 
 CRITICAL INSTRUCTION - VISA INFO: Always analyze the requested destination and provide the \`country\` name. Furthermore, determine the visa requirements for a Canadian passport holder visiting that country. Set \`visaRequirement\` strictly to one of: "visa-free", "visa-on-arrival", "visa-required", or "other". Provide a brief, helpful explanation in \`visaDetails\`.
 Make sure you NEVER swap latitude (lat) and longitude (lng). Latitude must be between -90 and 90, and longitude between -180 and 180. For example, Tokyo is roughly lat: 35.68, lng: 139.69.
 
-CRITICAL INSTRUCTION: You MUST generate at least one stay card AND at least one activity card for EVERY SINGLE DAY of the specified trip duration. Do not leave any days empty! If the user stays at the same hotel for multiple days, you must create a separate stay card for that hotel for EACH day they are there (e.g., day 1: hotel X, day 2: hotel X, etc.).
+CRITICAL INSTRUCTION - TRAVEL AND TRANSPORT: 
+ 1. You MUST generate at least one stay card (hotel) for every single day of the trip.
+ 2. You MUST generate 'transport' cards between every sequential location (e.g., from Hotel to Activity 1, from Activity 1 to Activity 2, and from Activity 2 back to the Hotel).
+ 3. Each 'transport' card MUST include:
+    - \`data.mode\`: 'transit', 'walking', 'driving', or 'bicycling'.
+    - \`data.price\`: Realistic cost for that leg (e.g., 2.50 for bus, 25 for taxi, 0 for walking).
+    - \`data.startTime\` and \`data.endTime\`: Exact times that bridge the gap between activities.
+    - \`data.from\` and \`data.to\`: Objects containing 'name', 'lat', 'lng', and 'cardId' of the previous/next cards.
+ 4. For any event or transport that is free, you MUST set \`data.price\` to exactly 0. The UI will display this as "Free".
+ 5. Ensure outings are realistically achievable in a single day—allot sufficient time for travel (at least 30-60 mins between locations unless they are adjacent).
+ 6. Every day MUST start at the hotel, go to activities, and ALWAYS end with a final transport card back to the hotel.
+
+ CRITICAL INSTRUCTION: You MUST generate at least one stay card AND at least one activity card for EVERY SINGLE DAY of the specified trip duration. Do not leave any days empty! If the user stays at the same hotel for multiple days, you must create a separate stay card for that hotel for EACH day they are there (e.g., day 1: hotel X, day 2: hotel X, etc.).
 Ensure outings are realistically achievable in a single day—do NOT overpack the schedule. Include necessary travel time, and be sure to allocate time for the user to return to the hotel. Each card MUST include realistic 'startTime' and 'endTime' fields in 24-hour HH:MM format (e.g., 09:00, 14:30) so they can be displayed on a timeline.
 In the "message" field of your JSON response, DO NOT output a summary or highlights of the trip. Just output a very brief and friendly message saying that you're done generating the itinerary (e.g., "I've planned out your trip!", "All done, your itinerary is ready!").`;
 
@@ -139,7 +164,7 @@ async function handler(req, res) {
 
     try {
         const result = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'models/gemini-2.5-flash-lite',
             contents: contents,
             config: {
                 systemInstruction: systemInstruction,

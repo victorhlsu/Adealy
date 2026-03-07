@@ -5,10 +5,11 @@ import type { TripCard } from '@/types/trip'
 
 
 
-async function fetchOsrmRoute(coords: Array<[number, number]>, signal: AbortSignal) {
+async function fetchOsrmRoute(coords: Array<[number, number]>, mode: string = 'driving', signal: AbortSignal) {
     if (coords.length < 2) return null
     const path = coords.map(([lng, lat]) => `${lng},${lat}`).join(';')
-    const url = `https://router.project-osrm.org/route/v1/driving/${path}?overview=full&geometries=geojson`
+    const profile = mode === 'walking' ? 'foot' : mode === 'bicycling' ? 'bicycle' : 'driving'
+    const url = `https://router.project-osrm.org/route/v1/${profile}/${path}?overview=full&geometries=geojson`
     const resp = await fetch(url, { signal })
     if (!resp.ok) return null
     const json = await resp.json()
@@ -17,9 +18,10 @@ async function fetchOsrmRoute(coords: Array<[number, number]>, signal: AbortSign
     return geometry
 }
 
-export function RoutesLayer({ cards, enabled, visibleDay }: { cards: TripCard[]; enabled: boolean; visibleDay?: number }) {
+export function RoutesLayer({ cards, enabled, visibleDay, activeLayer }: { cards: TripCard[]; enabled: boolean; visibleDay?: number; activeLayer?: string }) {
     const { map, isLoaded } = useMap()
     const [geoms, setGeoms] = useState<Array<{ id: string; geometry: any }> | null>(null)
+    const cacheRef = useRef<Record<string, any>>({})
     const mountedRef = useRef(false)
 
     // Identify transport cards that need routing
@@ -34,6 +36,7 @@ export function RoutesLayer({ cards, enabled, visibleDay }: { cards: TripCard[];
 
         return relevantCards.map(c => ({
             id: c.id,
+            mode: c.data.mode || 'driving',
             coords: [
                 [c.data.from!.lng, c.data.from!.lat],
                 [c.data.to!.lng, c.data.to!.lat]
@@ -53,7 +56,11 @@ export function RoutesLayer({ cards, enabled, visibleDay }: { cards: TripCard[];
         const abort = new AbortController()
 
         const run = async () => {
-            if (!routesToFetch.length) {
+            // Hide routes if viewing all days or if filtering by stay/activity
+            const isIndividualDayView = visibleDay !== undefined && visibleDay !== 0;
+            const isTransportLayerActive = activeLayer === 'all' || activeLayer === 'transport';
+
+            if (!routesToFetch.length || !isIndividualDayView || !isTransportLayerActive) {
                 setGeoms(null)
                 return
             }
@@ -64,19 +71,24 @@ export function RoutesLayer({ cards, enabled, visibleDay }: { cards: TripCard[];
             const out: Array<{ id: string; geometry: any }> = []
 
             await Promise.all(routesToFetch.map(async (r) => {
+                // Check cache first
+                if (cacheRef.current[r.id]) {
+                    out.push({ id: r.id, geometry: cacheRef.current[r.id] })
+                    return
+                }
+
                 try {
-                    const geometry = await fetchOsrmRoute(r.coords, abort.signal)
+                    const geometry = await fetchOsrmRoute(r.coords, r.mode, abort.signal)
                     if (geometry) {
+                        cacheRef.current[r.id] = geometry // Cache it
                         out.push({ id: r.id, geometry })
                     } else {
                         // Fallback to straight line if OSRM fails
-                        out.push({
-                            id: r.id,
-                            geometry: {
-                                type: 'LineString',
-                                coordinates: r.coords
-                            }
-                        })
+                        const fallback = {
+                            type: 'LineString',
+                            coordinates: r.coords
+                        }
+                        out.push({ id: r.id, geometry: fallback })
                     }
                 } catch (e) {
                     console.error("Failed to fetch route", e)

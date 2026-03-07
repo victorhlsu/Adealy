@@ -17,6 +17,9 @@ import {
   Send,
   ShoppingBag,
   ArrowRight,
+  Footprints,
+  Car,
+  Bike
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
@@ -49,6 +52,7 @@ export default function PlannerPage() {
   const [activeTab, setActiveTab] = useState<'design' | 'saved' | 'config'>('design');
   const [selectedDay, setSelectedDay] = useState<number>(0);
   const [activeLayer, setActiveLayer] = useState<'all' | 'stay' | 'activity' | 'transport'>('all');
+  const [focusedCardId, setFocusedCardId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapRef>(null);
@@ -76,9 +80,26 @@ export default function PlannerPage() {
     });
 
     if (!bounds.isEmpty()) {
-      map.fitBounds(bounds, { padding: 100, duration: 1200, maxZoom: 14 });
+      // If we have a focused card, zoom to it, otherwise fit all visible cards
+      if (focusedCardId) {
+        const card = cards.find(c => c.id === focusedCardId);
+        if (card?.position?.lng && card?.position?.lat) {
+          map.flyTo({ center: [card.position.lng, card.position.lat], zoom: 16, duration: 1500 });
+        }
+      } else {
+        map.fitBounds(bounds, { padding: 100, duration: 1200, maxZoom: 14 });
+      }
     }
-  }, [selectedDay, cards, viewMode, activeLayer]);
+  }, [selectedDay, cards, viewMode, activeLayer, focusedCardId]);
+
+  const zoomToCard = (cardId: string) => {
+    setFocusedCardId(prev => prev === cardId ? null : cardId);
+  };
+
+  const zoomToDay = (day: number) => {
+    setFocusedCardId(null);
+    setSelectedDay(prev => prev === day ? 0 : day);
+  };
 
   const handleGenerate = async () => {
     if (!prompt.trim()) return;
@@ -175,10 +196,10 @@ export default function PlannerPage() {
 
             <div className="space-y-1">
               <LayerItem icon={LayoutGrid} label="Itinerary" value={`${trip?.days || 0} days`} active={activeLayer === 'all'} onClick={() => setActiveLayer('all')} />
-              <LayerItem icon={BedDouble} label="Stays" value={`${stayCards.length} • $${stayCost}`} color="text-orange-400" active={activeLayer === 'stay'} onClick={() => setActiveLayer('stay')} />
-              <LayerItem icon={Camera} label="Activities" value={`${activityCards.length} • $${activityCost}`} color="text-blue-400" active={activeLayer === 'activity'} onClick={() => setActiveLayer('activity')} />
-              <LayerItem icon={Train} label="Transport" value={`${transportCards.length} • $${transportCost}`} color="text-emerald-400" active={activeLayer === 'transport'} onClick={() => setActiveLayer('transport')} />
-              <LayerItem icon={CreditCard} label="Total Cost" value={`$${calculatedBudgetUsed}`} color="text-purple-400" />
+              <LayerItem icon={BedDouble} label="Stays" value={stayCost === 0 ? "Free" : `${stayCards.length} • $${stayCost}`} color="text-orange-400" active={activeLayer === 'stay'} onClick={() => setActiveLayer('stay')} />
+              <LayerItem icon={Camera} label="Activities" value={activityCost === 0 ? "Free" : `${activityCards.length} • $${activityCost}`} color="text-blue-400" active={activeLayer === 'activity'} onClick={() => setActiveLayer('activity')} />
+              <LayerItem icon={Train} label="Transport" value={transportCost === 0 ? "Free" : `${transportCards.length} • $${transportCost}`} color="text-emerald-400" active={activeLayer === 'transport'} onClick={() => setActiveLayer('transport')} />
+              <LayerItem icon={CreditCard} label="Total Cost" value={calculatedBudgetUsed === 0 ? "Free" : `$${calculatedBudgetUsed}`} color="text-purple-400" />
             </div>
           </div>
 
@@ -220,20 +241,55 @@ export default function PlannerPage() {
                         <span className="text-xs font-bold opacity-80">{dayCost === 0 ? "Free" : `$${dayCost}`}</span>
                       </button>
 
-                      {selectedDay === dayNum && dayCards.length > 0 && (
-                        <div className="pl-6 pr-2 py-2 space-y-3 relative before:absolute before:inset-y-3 before:left-[17px] before:w-px before:bg-border/40">
-                          {dayCards.sort((a, b) => (a.data.startTime || '').localeCompare(b.data.startTime || '')).map(card => (
-                            <div key={card.id} className="relative flex flex-col gap-0.5 group/timeline cursor-pointer">
-                              <div className="absolute top-1.5 -left-[14px] w-2 h-2 rounded-full border border-background bg-muted-foreground group-hover/timeline:bg-primary group-hover/timeline:scale-125 transition-all" />
-                              <div className="text-[9px] font-bold text-muted-foreground uppercase tracking-widest leading-none flex items-center gap-1.5">
-                                {card.data.startTime || "??:??"}
-                                {card.data.endTime && <span className="flex items-center gap-1"><ArrowRight className="h-2 w-2 opacity-50" /> {card.data.endTime}</span>}
-                              </div>
-                              <span className="text-xs font-medium text-foreground line-clamp-1 leading-tight group-hover/timeline:text-primary transition-colors">{card.name}</span>
+                      <AnimatePresence>
+                        {selectedDay === dayNum && dayCards.length > 0 && (
+                          <motion.div
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: "auto", opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            transition={{ duration: 0.2, ease: "easeOut" }}
+                            className="overflow-hidden"
+                          >
+                            <div className="pl-6 pr-2 py-2 space-y-3 relative before:absolute before:inset-y-3 before:left-[17px] before:w-px before:bg-border/40">
+                              {dayCards.sort((a, b) => (a.data.startTime || '').localeCompare(b.data.startTime || '')).map(card => (
+                                <div key={card.id} className="relative flex flex-col gap-0.5 group/timeline cursor-pointer">
+                                  <div className="absolute top-1.5 -left-[14px] w-2 h-2 rounded-full border border-background bg-muted-foreground group-hover/timeline:bg-primary group-hover/timeline:scale-125 transition-all" />
+                                  <div className="text-[9px] font-bold text-muted-foreground uppercase tracking-widest leading-none flex items-center gap-1.5">
+                                    {card.data.startTime || "??:??"}
+                                    {card.data.endTime && <span className="flex items-center gap-1"><ArrowRight className="h-2 w-2 opacity-50" /> {card.data.endTime}</span>}
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <div className={cn(
+                                      "relative flex items-center justify-center h-6 w-6 rounded-md shadow-sm",
+                                      card.type === 'transport' ? "bg-emerald-500/10 text-emerald-500" : "bg-sidebar-accent/50 text-foreground"
+                                    )}>
+                                      {card.type === 'stay' ? <BedDouble className="h-3 w-3" /> :
+                                        card.type === 'activity' ? <Camera className="h-3 w-3" /> :
+                                          card.data.mode === 'walking' ? <Footprints className="h-3 w-3" /> :
+                                            card.data.mode === 'driving' ? <Car className="h-3 w-3" /> :
+                                              card.data.mode === 'bicycling' ? <Bike className="h-3 w-3" /> :
+                                                <Train className="h-3 w-3" />
+                                      }
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <span className={cn(
+                                        "text-xs font-medium block truncate transition-colors",
+                                        card.type === 'transport' ? "text-emerald-500/80 group-hover/timeline:text-emerald-500" : "text-foreground group-hover/timeline:text-primary"
+                                      )}>
+                                        {card.name}
+                                      </span>
+                                      <span className="text-[10px] text-muted-foreground block truncate">
+                                        {card.type === 'transport' && (card.data.mode && card.data.mode.charAt(0).toUpperCase() + card.data.mode.slice(1) + " • ")}
+                                        {card.data.price === 0 ? "Free" : `$${card.data.price || 0}`}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
                             </div>
-                          ))}
-                        </div>
-                      )}
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
                     </div>
                   );
                 })}
@@ -341,7 +397,7 @@ export default function PlannerPage() {
                 selectedCountryName={trip?.country}
                 visaBucketsByCountryName={trip?.country && trip?.visaRequirement ? { [trip.country]: trip.visaRequirement } : undefined}
               />
-              <RoutesLayer cards={cards} enabled={true} visibleDay={selectedDay} />
+              <RoutesLayer cards={cards} enabled={true} visibleDay={selectedDay} activeLayer={activeLayer} />
 
               {/* Dynamic Markers */}
               {displayedCards.map((card) => (
@@ -459,7 +515,10 @@ export default function PlannerPage() {
                       transition={{ duration: 0.5, delay: i * 0.1 }}
                       className="relative pb-16 last:pb-0"
                     >
-                      <div className="sticky top-0 bg-background/95 backdrop-blur-sm z-10 py-6 mb-8 border-b border-border/40 flex items-baseline justify-between group">
+                      <div
+                        className="sticky top-0 bg-background/95 backdrop-blur-sm z-10 py-6 mb-8 border-b border-border/40 flex items-baseline justify-between group cursor-pointer hover:bg-muted/30 transition-colors"
+                        onClick={() => zoomToDay(dayNum)}
+                      >
                         <div className="flex items-baseline gap-4">
                           <span className="font-serif text-4xl md:text-5xl text-foreground/20 font-light group-hover:text-primary/20 transition-colors">0{dayNum}</span>
                           <div>
@@ -479,9 +538,16 @@ export default function PlannerPage() {
                             <motion.div
                               key={card.id}
                               whileHover={{ y: -4, scale: 1.01 }}
-                              className="group relative bg-card rounded-2xl p-6 transition-all shadow-sm hover:shadow-xl border border-border/40 overflow-hidden"
+                              className={cn(
+                                "group relative bg-card rounded-2xl p-6 transition-all shadow-sm hover:shadow-xl border border-border/40 overflow-hidden cursor-pointer",
+                                focusedCardId === card.id && "ring-2 ring-primary ring-offset-4 ring-offset-background border-primary"
+                              )}
+                              onClick={() => zoomToCard(card.id)}
                             >
-                              <div className="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-primary/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                              <div className={cn(
+                                "absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-primary/50 to-transparent transition-opacity",
+                                focusedCardId === card.id ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                              )} />
 
                               <div className="flex flex-col md:flex-row gap-6">
                                 {/* Time Column */}
