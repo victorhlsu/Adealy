@@ -30,6 +30,7 @@ type AppState = {
     city?: string;
     airportCode?: string;
   };
+  defaultCurrency: string;
 
   prompts: PromptItem[];
 
@@ -42,6 +43,7 @@ type AppState = {
   removePassport: (id: string) => void;
 
   setHome: (home: { city?: string; airportCode?: string }) => void;
+  setDefaultCurrency: (currency: string) => void;
 
   addPrompt: (text: string) => void;
   editPromptActiveVersion: (promptId: string, nextText: string) => void;
@@ -68,6 +70,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     city: "Toronto",
     airportCode: "YYZ",
   });
+  const [defaultCurrency, setDefaultCurrency] = useState("USD - US Dollar");
 
   const [prompts, setPrompts] = useState<PromptItem[]>(() => {
     const p0Id = uid("prompt");
@@ -89,6 +92,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       email,
       passports,
       home,
+      defaultCurrency,
       prompts,
 
       setAuthed: (e) => {
@@ -113,6 +117,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
           ];
         });
         setHome({ city: "Toronto", airportCode: "YYZ" });
+        setDefaultCurrency("USD - US Dollar");
       },
       setOnboardingComplete: (done) => setOnboardingComplete(done),
 
@@ -122,6 +127,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       removePassport: (id) => setPassports((prev) => prev.filter((p) => p.id !== id)),
 
       setHome: (h) => setHome(h),
+      setDefaultCurrency: (c) => setDefaultCurrency(c),
 
       addPrompt: (text) => {
         const pId = uid("prompt");
@@ -162,7 +168,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         setPrompts((prev) => prev.map((p) => (p.id === promptId ? { ...p, activeVersionId: versionId } : p))),
       removePrompt: (promptId) => setPrompts((prev) => prev.filter((p) => p.id !== promptId)),
     }),
-    [email, home, isAuthed, onboardingComplete, passports, prompts],
+    [email, home, defaultCurrency, isAuthed, onboardingComplete, passports, prompts],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
