@@ -1,19 +1,15 @@
-# Backend Dockerfile
+# syntax=docker/dockerfile:1
 FROM node:20-alpine
 
 WORKDIR /app
 
-# Copy package files
+# Install dependencies first for better layer caching
 COPY package*.json ./
-
-# Install dependencies
 RUN npm install
 
-# Copy application code
-COPY src ./src
+# Copy full backend source (routes, assets, workers, supabase, etc.)
+COPY . .
 
-# Expose port
 EXPOSE 3001
 
-# Start the server
 CMD ["npm", "start"]
