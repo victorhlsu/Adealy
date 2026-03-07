@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Adealy API Tester</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="header">
+      <div class="header__inner">
+        <div>
+          <h1>Adealy API Tester</h1>
+          <p class="muted">Quick temp frontend to hit your backend routes.</p>
+        </div>
+        <div class="right">
+          <span class="pill" id="healthPill">Not checked</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="card">
+        <div class="row row--wrap">
+          <label class="field">
+            <span class="field__label">Base URL</span>
+            <input id="baseUrl" type="text" placeholder="http://localhost:3001/api" />
+            <span class="field__help">Defaults to <code>http://localhost:3001/api</code>. Saved to your browser.</span>
+          </label>
+          <div class="actions">
+            <button class="btn" id="btnPing">Ping /status</button>
+            <button class="btn btn--secondary" id="btnClear">Clear</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Presets</h2>
+        <div class="presetGrid">
+          <button class="preset" id="presetStatus">
+            <div class="preset__title">GET /status</div>
+            <div class="preset__desc">Backend health + uptime</div>
+          </button>
+          <button class="preset" id="presetGemini">
+            <div class="preset__title">GET /gemini/status</div>
+            <div class="preset__desc">Checks Gemini API health</div>
+          </button>
+          <button class="preset" id="presetVisaSingle">
+            <div class="preset__title">POST /visa-single</div>
+            <div class="preset__desc">Visa data for a country (e.g., "France")</div>
+          </button>
+          <button class="preset" id="presetFlights">
+            <div class="preset__title">POST /data/flights</div>
+            <div class="preset__desc">Search round-trip (LAX ↔ JFK, needs returnDate)</div>
+          </button>
+          <button class="preset" id="presetHotels">
+            <div class="preset__title">POST /data/hotels</div>
+            <div class="preset__desc">Search hotels in San Francisco (checkin/checkout dates)</div>
+          </button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Request</h2>
+        <div class="row row--wrap">
+          <label class="field field--small">
+            <span class="field__label">Method</span>
+            <select id="method">
+              <option>GET</option>
+              <option>POST</option>
+              <option>PUT</option>
+              <option>PATCH</option>
+              <option>DELETE</option>
+            </select>
+          </label>
+
+          <label class="field field--grow">
+            <span class="field__label">Path</span>
+            <input id="path" type="text" placeholder="/status" />
+            <span class="field__help">This is appended to the Base URL.</span>
+          </label>
+
+          <div class="actions">
+            <button class="btn btn--primary" id="btnSend">Send</button>
+          </div>
+        </div>
+
+        <div class="row row--wrap">
+          <label class="field field--grow">
+            <span class="field__label">Headers (JSON)</span>
+            <textarea id="headers" rows="4" spellcheck="false" placeholder='{"Content-Type":"application/json"}'></textarea>
+            <span class="field__help">Leave empty for defaults.</span>
+          </label>
+          <label class="field field--grow">
+            <span class="field__label">Body (JSON)</span>
+            <textarea id="body" rows="4" spellcheck="false" placeholder='{"country":"France"}'></textarea>
+            <span class="field__help">Ignored for GET/DELETE unless you force it.</span>
+          </label>
+        </div>
+
+        <details class="details">
+          <summary>Options</summary>
+          <div class="row row--wrap">
+            <label class="check">
+              <input type="checkbox" id="includeBodyOnGet" />
+              <span>Send body for GET/DELETE</span>
+            </label>
+            <label class="field field--small">
+              <span class="field__label">Timeout (ms)</span>
+              <input id="timeoutMs" type="number" min="0" step="100" />
+            </label>
+          </div>
+        </details>
+      </section>
+
+      <section class="card">
+        <h2>Response</h2>
+        <div class="meta" id="responseMeta">No request yet.</div>
+        <pre class="output" id="output" aria-live="polite"></pre>
+      </section>
+
+      <footer class="footer">
+        <div class="muted">
+          Tip: Start your backend with <code>npm run dev</code> (or whatever you use) and set Base URL accordingly.
+        </div>
+      </footer>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

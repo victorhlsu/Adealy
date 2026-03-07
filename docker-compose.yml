@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  # Backend API Server
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: adealy-backend
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+    volumes:
+      - ./backend/src:/app/src
+      - ./backend/.env:/app/.env
+      - /app/node_modules
+    networks:
+      - adealy-network
+    restart: unless-stopped
+
+  # Frontend (Main Application)
+  frontend:
+    build:
+      context: ./frontend
+      target: development
+      dockerfile: Dockerfile
+    container_name: adealy-frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/vite.config.ts:/app/vite.config.ts
+      - ./frontend/postcss.config.mjs:/app/postcss.config.mjs
+      - /app/node_modules
+    networks:
+      - adealy-network
+    depends_on:
+      - backend
+    restart: unless-stopped
+    command: npm run dev -- --host 0.0.0.0
+
+  # Temp Frontend (API Tester)
+  temp-frontend:
+    image: python:3.11-alpine
+    container_name: adealy-temp-frontend
+    ports:
+      - "3000:3000"
+    working_dir: /app
+    volumes:
+      - ./temp/api-tester-frontend:/app
+    networks:
+      - adealy-network
+    depends_on:
+      - backend
+    restart: unless-stopped
+    command: python -m http.server 3000
+
+networks:
+  adealy-network:
+    driver: bridge
+
+volumes:
+  backend-node_modules:
+  frontend-node_modules:
+  temp-node_modules:
