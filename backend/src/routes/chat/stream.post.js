@@ -167,7 +167,7 @@ async function handler(req, res) {
             model: 'models/gemini-2.5-flash-lite',
             contents: contents,
             config: {
-                systemInstruction: systemInstruction,
+                systemInstruction: systemInstruction + `\n\nIMPORTANT: The current date is ${new Date().toISOString().split('T')[0]}. All plans, recommendations, and trips MUST use dates in the future relative to this current date unless the user explicitly requests otherwise.`,
                 temperature: 0.7,
                 responseMimeType: "application/json"
             }
