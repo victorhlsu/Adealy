@@ -113,6 +113,14 @@ export default function PlannerPage() {
   const estimatedBudget = trip?.summary?.estimatedBudget || (calculatedBudgetUsed > 0 ? Math.ceil(calculatedBudgetUsed * 1.2 / 500) * 500 : 2500);
   const budgetProgress = estimatedBudget > 0 ? Math.min((calculatedBudgetUsed / estimatedBudget) * 100, 100) : 0;
 
+  // Layer Subtotals
+  const stayCards = cards.filter(c => c.type === 'stay');
+  const stayCost = stayCards.reduce((sum, c) => sum + (c.data?.price || 0), 0);
+  const activityCards = cards.filter(c => c.type === 'activity');
+  const activityCost = activityCards.reduce((sum, c) => sum + (c.data?.price || 0), 0);
+  const transportCards = cards.filter(c => c.type === 'transport');
+  const transportCost = transportCards.reduce((sum, c) => sum + (c.data?.price || 0), 0);
+
   return (
     <div className="h-screen w-screen bg-background text-foreground flex overflow-hidden font-sans">
 
@@ -137,11 +145,11 @@ export default function PlannerPage() {
             </div>
 
             <div className="space-y-1">
-              <LayerItem icon={LayoutGrid} label="Itinerary" count={trip?.days || 0} active={activeLayer === 'all'} onClick={() => setActiveLayer('all')} />
-              <LayerItem icon={BedDouble} label="Stays" count={cards.filter(c => c.type === 'stay').length} color="text-orange-400" active={activeLayer === 'stay'} onClick={() => setActiveLayer('stay')} />
-              <LayerItem icon={Camera} label="Activities" count={cards.filter(c => c.type === 'activity').length} color="text-blue-400" active={activeLayer === 'activity'} onClick={() => setActiveLayer('activity')} />
-              <LayerItem icon={Train} label="Transport" count={cards.filter(c => c.type === 'transport').length} color="text-emerald-400" active={activeLayer === 'transport'} onClick={() => setActiveLayer('transport')} />
-              <LayerItem icon={CreditCard} label="Budget" value={`$${calculatedBudgetUsed}`} color="text-purple-400" />
+              <LayerItem icon={LayoutGrid} label="Itinerary" value={`${trip?.days || 0} days`} active={activeLayer === 'all'} onClick={() => setActiveLayer('all')} />
+              <LayerItem icon={BedDouble} label="Stays" value={`${stayCards.length} • $${stayCost}`} color="text-orange-400" active={activeLayer === 'stay'} onClick={() => setActiveLayer('stay')} />
+              <LayerItem icon={Camera} label="Activities" value={`${activityCards.length} • $${activityCost}`} color="text-blue-400" active={activeLayer === 'activity'} onClick={() => setActiveLayer('activity')} />
+              <LayerItem icon={Train} label="Transport" value={`${transportCards.length} • $${transportCost}`} color="text-emerald-400" active={activeLayer === 'transport'} onClick={() => setActiveLayer('transport')} />
+              <LayerItem icon={CreditCard} label="Total Cost" value={`$${calculatedBudgetUsed}`} color="text-purple-400" />
             </div>
           </div>
 
@@ -160,20 +168,30 @@ export default function PlannerPage() {
                   onClick={() => setSelectedDay(0)}
                 >
                   <span className="font-medium">All Days</span>
+                  <span className="text-xs font-bold opacity-80">${calculatedBudgetUsed}</span>
                 </button>
-                {Array.from({ length: trip.days }).map((_, i) => (
-                  <button
-                    key={i}
-                    className={cn(
-                      "w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors",
-                      selectedDay === i + 1 ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                    )}
-                    onClick={() => setSelectedDay(i + 1)}
-                  >
-                    <span className="font-medium">Day {i + 1}</span>
-                    <span className="text-xs text-muted-foreground">{trip?.destination?.split(',')[0] || "City"}</span>
-                  </button>
-                ))}
+                {Array.from({ length: trip.days }).map((_, i) => {
+                  const dayNum = i + 1;
+                  const dayCards = cards.filter(c => c.day === dayNum);
+                  const dayCost = dayCards.reduce((sum, c) => sum + (c.data?.price || 0), 0);
+
+                  return (
+                    <button
+                      key={i}
+                      className={cn(
+                        "w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors",
+                        selectedDay === dayNum ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                      )}
+                      onClick={() => setSelectedDay(dayNum)}
+                    >
+                      <div className="flex flex-col items-start text-left">
+                        <span className="font-medium">Day {dayNum}</span>
+                        <span className="text-[10px] opacity-70">{trip?.destination?.split(',')[0] || "City"}</span>
+                      </div>
+                      <span className="text-xs font-bold opacity-80">${dayCost}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
