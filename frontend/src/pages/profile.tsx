@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { ModeToggle } from "@/components/mode-toggle";
 
+import { useAppState } from "@/state/app-state";
 
 export default function ProfilePage() {
     const [, setLocation] = useLocation();
@@ -22,6 +23,8 @@ export default function ProfilePage() {
     
     const [isLoading, setIsLoading] = useState(false);
     const [profileData, setProfileData] = useState<any>(null);
+    const { defaultCurrency, setDefaultCurrency } = useAppState();
+
 
     useEffect(() => {
         async function loadProfile() {
@@ -192,8 +195,13 @@ export default function ProfilePage() {
 
                         <div className="space-y-2">
                             <label className="text-xs font-bold uppercase text-muted-foreground">Default Currency</label>
-                            <select className="w-full bg-muted border border-border h-10 rounded-md px-3 text-sm text-foreground focus:outline-none">
+                            <select
+                                value={defaultCurrency}
+                                onChange={(e) => setDefaultCurrency(e.target.value)}
+                                className="w-full bg-muted border border-border h-10 rounded-md px-3 text-sm text-foreground focus:outline-none"
+                            >
                                 <option>USD - US Dollar</option>
+                                <option>CAD - Canadian Dollar</option>
                                 <option>EUR - Euro</option>
                                 <option>JPY - Japanese Yen</option>
                             </select>

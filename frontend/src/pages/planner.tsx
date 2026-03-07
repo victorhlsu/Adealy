@@ -46,6 +46,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   const [inviteEmail, setInviteEmail] = useState("");
   const [isInviting, setIsInviting] = useState(false);
   const [inviteMessage, setInviteMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [showInviteModal, setShowInviteModal] = useState(false);
   const [trip, setTrip] = useState<Trip | null>(null);
   const [cards, setCards] = useState<TripCard[]>([]);
   const [cart, setCart] = useState<TripCard[]>([]);
@@ -84,6 +85,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   const [viewMode, setViewMode] = useState<'map' | 'timeline'>('map');
   const [activeTab, setActiveTab] = useState<'design' | 'saved' | 'config'>('design');
   const [selectedDay, setSelectedDay] = useState<number>(0);
+  const [activeLayer, setActiveLayer] = useState<'all' | 'stay' | 'activity' | 'transport'>('all');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -92,8 +94,11 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
     let channel: any;
 
     const initRoom = async () => {
-      // 1. Load members FIRST to check access
-      const { data: memData } = await supabase.from('room_members').select('*').eq('room_id', roomId);
+      // 1. Load members FIRST to check access — join with user_profiles to get emails
+      const { data: memData } = await supabase
+        .from('room_members')
+        .select('*, user_profiles(email, first_name, last_name)')
+        .eq('room_id', roomId);
       if (memData) {
          const me = memData.find((m: any) => m.user_id === user.sub);
          if (!me) {
@@ -160,7 +165,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
            if (newState.focused_view) setViewMode(newState.focused_view as any);
         })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'room_members', filter: `room_id=eq.${roomId}` }, () => {
-           supabase.from('room_members').select('*').eq('room_id', roomId).then(({data}: any) => {
+           supabase.from('room_members').select('*, user_profiles(email, first_name, last_name)').eq('room_id', roomId).then(({data}: any) => {
               if (data) {
                  setMembers(data);
                  const me = data.find((m: any) => m.user_id === user.sub);
@@ -237,8 +242,24 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   }, [messages]);
 
   // Derived state
-  const displayedCards = selectedDay === 0 ? cards : cards.filter(c => c.day === selectedDay);
-  const budgetProgress = trip && trip.summary ? (trip.summary.budgetUsed / trip.summary.estimatedBudget) * 100 : 0;
+  const displayedCards = cards.filter(c => {
+    const dayMatch = selectedDay === 0 || c.day === selectedDay;
+    const layerMatch = activeLayer === 'all' || c.type === activeLayer;
+    return dayMatch && layerMatch;
+  });
+
+  // Dynamic Budget Calculation
+  const calculatedBudgetUsed = cards.reduce((sum, card) => sum + (card.data?.price || 0), 0);
+  const estimatedBudget = trip?.summary?.estimatedBudget || (calculatedBudgetUsed > 0 ? Math.ceil(calculatedBudgetUsed * 1.2 / 500) * 500 : 2500);
+  const budgetProgress = estimatedBudget > 0 ? Math.min((calculatedBudgetUsed / estimatedBudget) * 100, 100) : 0;
+
+  // Layer Subtotals
+  const stayCards = cards.filter(c => c.type === 'stay');
+  const stayCost = stayCards.reduce((sum, c) => sum + (c.data?.price || 0), 0);
+  const activityCards = cards.filter(c => c.type === 'activity');
+  const activityCost = activityCards.reduce((sum, c) => sum + (c.data?.price || 0), 0);
+  const transportCards = cards.filter(c => c.type === 'transport');
+  const transportCost = transportCards.reduce((sum, c) => sum + (c.data?.price || 0), 0);
 
   // Access Denied Screen
   if (accessDenied) {
@@ -278,11 +299,11 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
             </div>
 
             <div className="space-y-1">
-              <LayerItem icon={LayoutGrid} label="Itinerary" count={trip?.days || 0} active />
-              <LayerItem icon={BedDouble} label="Stays" count={cards.filter(c => c.type === 'stay').length} color="text-orange-400" />
-              <LayerItem icon={Camera} label="Activities" count={cards.filter(c => c.type === 'activity').length} color="text-blue-400" />
-              <LayerItem icon={Train} label="Transport" count={cards.filter(c => c.type === 'transport').length} color="text-emerald-400" />
-              <LayerItem icon={CreditCard} label="Budget" value={trip?.summary ? `$${trip.summary.budgetUsed}` : '-'} color="text-purple-400" />
+              <LayerItem icon={LayoutGrid} label="Itinerary" value={`${trip?.days || 0} days`} active={activeLayer === 'all'} onClick={() => setActiveLayer('all')} />
+              <LayerItem icon={BedDouble} label="Stays" value={`${stayCards.length} • $${stayCost}`} color="text-orange-400" active={activeLayer === 'stay'} onClick={() => setActiveLayer('stay')} />
+              <LayerItem icon={Camera} label="Activities" value={`${activityCards.length} • $${activityCost}`} color="text-blue-400" active={activeLayer === 'activity'} onClick={() => setActiveLayer('activity')} />
+              <LayerItem icon={Train} label="Transport" value={`${transportCards.length} • $${transportCost}`} color="text-emerald-400" active={activeLayer === 'transport'} onClick={() => setActiveLayer('transport')} />
+              <LayerItem icon={CreditCard} label="Total Cost" value={`$${calculatedBudgetUsed}`} color="text-purple-400" />
             </div>
           </div>
 
@@ -301,20 +322,30 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                   onClick={() => setSelectedDay(0)}
                 >
                   <span className="font-medium">All Days</span>
+                  <span className="text-xs font-bold opacity-80">${calculatedBudgetUsed}</span>
                 </button>
-                {Array.from({ length: trip.days }).map((_, i) => (
-                  <button
-                    key={i}
-                    className={cn(
-                      "w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors",
-                      selectedDay === i + 1 ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                    )}
-                    onClick={() => setSelectedDay(i + 1)}
-                  >
-                    <span className="font-medium">Day {i + 1}</span>
-                    <span className="text-xs text-muted-foreground">Kyoto</span>
-                  </button>
-                ))}
+                {Array.from({ length: trip.days }).map((_, i) => {
+                  const dayNum = i + 1;
+                  const dayCards = cards.filter(c => c.day === dayNum);
+                  const dayCost = dayCards.reduce((sum, c) => sum + (c.data?.price || 0), 0);
+
+                  return (
+                    <button
+                      key={i}
+                      className={cn(
+                        "w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors",
+                        selectedDay === dayNum ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                      )}
+                      onClick={() => setSelectedDay(dayNum)}
+                    >
+                      <div className="flex flex-col items-start text-left">
+                        <span className="font-medium">Day {dayNum}</span>
+                        <span className="text-[10px] opacity-70">{trip?.destination?.split(',')[0] || "City"}</span>
+                      </div>
+                      <span className="text-xs font-bold opacity-80">${dayCost}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -351,6 +382,22 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
             <div className="flex items-center gap-2">
               <h1 className="font-bold text-sm tracking-wide">{trip?.title || roomName}</h1>
               <Badge variant="secondary" className="bg-muted text-muted-foreground border-0 text-[10px] px-1.5 h-5">LIVE</Badge>
+              {trip?.visaRequirement && (
+                <div title={trip.visaDetails}>
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "text-[10px] px-1.5 h-5 uppercase border-0 cursor-help",
+                      trip.visaRequirement === 'visa-free' ? 'bg-emerald-500/10 text-emerald-500' :
+                        trip.visaRequirement === 'visa-on-arrival' ? 'bg-amber-500/10 text-amber-500' :
+                          trip.visaRequirement === 'visa-required' ? 'bg-rose-500/10 text-rose-500' :
+                            'bg-slate-500/10 text-slate-500'
+                    )}
+                  >
+                    {trip.visaRequirement.replace(/-/g, ' ')}
+                  </Badge>
+                </div>
+              )}
             </div>
           </div>
 
@@ -379,32 +426,78 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
           {/* Right Actions */}
           <div className="flex items-center gap-4">
             {/* Budget Bar */}
-            {trip && trip.summary && (
-              <div className="hidden lg:flex items-center gap-3 bg-muted px-3 py-1.5 rounded-full border border-border/10">
-                <div className="text-xs font-medium">
-                  <span className="text-foreground">${trip.summary.budgetUsed}</span>
-                  <span className="text-muted-foreground"> / ${trip.summary.estimatedBudget}</span>
-                </div>
-                <div className="w-20 h-1.5 bg-background rounded-full overflow-hidden">
-                  <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${budgetProgress}%` }} />
-                </div>
+            {/* Budget Bar */}
+            <div className="hidden lg:flex items-center gap-3 bg-muted px-3 py-1.5 rounded-full border border-border/10">
+              <div className="text-xs font-medium">
+                <span className="text-foreground">${calculatedBudgetUsed}</span>
+                <span className="text-muted-foreground"> / ${estimatedBudget}</span>
               </div>
-            )}
+              <div className="w-20 h-1.5 bg-background rounded-full overflow-hidden">
+                <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${budgetProgress}%` }} />
+              </div>
+            </div>
 
             <ModeToggle />
 
-            <Button size="sm" className="bg-primary hover:bg-primary/90 text-primary-foreground h-8 text-xs gap-2">
-              <Share2 className="h-3 w-3" /> Share
+            <Button
+              onClick={() => { setShowInviteModal(true); setInviteMessage(null); }}
+              size="sm"
+              className="bg-primary hover:bg-primary/90 text-primary-foreground h-8 text-xs gap-2"
+            >
+              <Share2 className="h-3 w-3" /> Invite
             </Button>
           </div>
         </header>
+
+        {/* Invite Modal Overlay */}
+        {showInviteModal && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowInviteModal(false)}>
+            <div className="bg-sidebar border border-sidebar-border rounded-2xl p-6 w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <UserPlus className="h-5 w-5 text-primary" />
+                  <h2 className="font-bold text-base">Invite a Collaborator</h2>
+                </div>
+                <button onClick={() => setShowInviteModal(false)} className="text-muted-foreground hover:text-foreground text-lg leading-none">&times;</button>
+              </div>
+              <p className="text-xs text-muted-foreground mb-4">Enter their email — they must have an Adealy account first.</p>
+              <form onSubmit={async (e) => { await handleInvite(e); }} className="space-y-3">
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <input
+                    type="email"
+                    value={inviteEmail}
+                    onChange={(e) => setInviteEmail(e.target.value)}
+                    placeholder="friend@email.com"
+                    className="w-full pl-9 pr-3 py-2.5 text-sm bg-muted border border-border/50 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary/50 text-foreground placeholder:text-muted-foreground"
+                    required
+                    autoFocus
+                  />
+                </div>
+                {inviteMessage && (
+                  <div className={cn(
+                    "text-xs px-3 py-2 rounded-lg",
+                    inviteMessage.type === 'success'
+                      ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                      : "bg-red-500/10 text-red-400 border border-red-500/20"
+                  )}>
+                    {inviteMessage.text}
+                  </div>
+                )}
+                <Button type="submit" disabled={isInviting} className="w-full">
+                  {isInviting ? 'Sending invite...' : 'Send Invite'}
+                </Button>
+              </form>
+            </div>
+          </div>
+        )}
 
         {/* Content View */}
         <div className="flex-1 relative bg-background pt-14">
           {viewMode === 'map' ? (
             <Map
-              center={[135.7681, 35.0116]} // Default to Kyoto for demo
-              zoom={12}
+              center={[0, 20]} // Default to World View
+              zoom={1.5}
               className="w-full h-full"
               styles={{
                 dark: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
@@ -412,7 +505,11 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
               }}
             >
               <MapControls position="bottom-right" />
-              <CountryLayer mode="destination" />
+              <CountryLayer
+                mode={trip?.country ? 'selected' : 'destination'}
+                selectedCountryName={trip?.country}
+                visaBucketsByCountryName={trip?.country && trip?.visaRequirement ? { [trip.country]: trip.visaRequirement } : undefined}
+              />
               <RoutesLayer cards={cards} enabled={true} visibleDay={selectedDay} />
 
               {/* Dynamic Markers */}
@@ -514,7 +611,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                     </div>
                     <div className="w-px h-10 bg-border/50" />
                     <div className="flex flex-col items-center">
-                      <span className="text-2xl font-serif text-foreground">${trip?.summary?.estimatedBudget || 2500}</span>
+                      <span className="text-2xl font-serif text-foreground">${estimatedBudget}</span>
                       <span className="text-xs uppercase tracking-wider">Est. Cost</span>
                     </div>
                   </div>
@@ -522,7 +619,10 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 
                 {trip && Array.from({ length: trip.days }).map((_, i) => {
                   const dayNum = i + 1;
-                  const dayCards = cards.filter(c => c.day === dayNum).sort((a, b) => (a.data.startTime || '').localeCompare(b.data.startTime || ''));
+                  const dayCards = cards.filter(c =>
+                    c.day === dayNum &&
+                    (activeLayer === 'all' || c.type === activeLayer)
+                  ).sort((a, b) => (a.data.startTime || '').localeCompare(b.data.startTime || ''));
 
                   if (selectedDay !== 0 && selectedDay !== dayNum) return null;
 
@@ -539,7 +639,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                         <div className="flex items-baseline gap-4">
                           <span className="font-serif text-4xl md:text-5xl text-foreground/20 font-light group-hover:text-primary/20 transition-colors">0{dayNum}</span>
                           <div>
-                            <h2 className="text-xl md:text-2xl font-bold font-serif">Kyoto Exploration</h2>
+                            <h2 className="text-xl md:text-2xl font-bold font-serif">{trip?.destination?.split(',')[0] || "City"} Exploration</h2>
                             <span className="text-sm text-muted-foreground font-medium uppercase tracking-wider">October 12 • Saturday</span>
                           </div>
                         </div>
@@ -720,13 +820,23 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                   <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Members ({members.length})</h4>
                 </div>
                 <div className="space-y-2">
-                  {members.map(m => (
+                  {members.map(m => {
+                    const profile = m.user_profiles;
+                    const displayName = profile?.first_name
+                      ? `${profile.first_name} ${profile.last_name || ''}`.trim()
+                      : m.user_id === user?.sub ? 'You' : 'Member';
+                    return (
                     <div key={m.id} className="p-3 bg-card border border-border/50 rounded-lg flex flex-col gap-1">
                       <div className="flex items-center justify-between">
-                        <span className="text-xs font-semibold">
-                          {m.user_id === user?.sub ? 'You' : 'Member'}
-                          {m.role === 'owner' && <span className="ml-1.5 text-[9px] uppercase text-primary font-bold bg-primary/10 px-1.5 py-0.5 rounded-full">Owner</span>}
-                        </span>
+                        <div>
+                          <span className="text-xs font-semibold">
+                            {m.user_id === user?.sub ? `${displayName} (You)` : displayName}
+                            {m.role === 'owner' && <span className="ml-1.5 text-[9px] uppercase text-primary font-bold bg-primary/10 px-1.5 py-0.5 rounded-full">Owner</span>}
+                          </span>
+                          {profile?.email && (
+                            <p className="text-[10px] text-muted-foreground mt-0.5">{profile.email}</p>
+                          )}
+                        </div>
                         {isOwner && m.user_id !== user?.sub && (
                           <Button size="sm" variant="destructive" className="h-5 text-[9px] px-2" onClick={() => {
                             supabase.from('room_members').delete().eq('id', m.id).then();
@@ -742,7 +852,8 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                         </label>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -823,12 +934,14 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 }
 
 // Helper Component for Layers
-function LayerItem({ icon: Icon, label, count, value, active, color }: any) {
+function LayerItem({ icon: Icon, label, count, value, active, color, onClick }: any) {
   return (
-    <div className={cn(
-      "group flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-all",
-      active ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-    )}>
+    <div
+      onClick={onClick}
+      className={cn(
+        "group flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-all",
+        active ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+      )}>
       <div className="flex items-center gap-3">
         <Icon className={cn("h-4 w-4", color)} />
         <span className="text-sm font-medium">{label}</span>

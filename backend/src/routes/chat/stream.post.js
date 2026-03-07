@@ -18,6 +18,9 @@ If you generate a trip, it MUST follow this specific JSON schema format exactly:
     "trip": {
         "title": "Kyoto Cultural Journey",
         "destination": "Kyoto, Japan",
+        "country": "Japan",
+        "visaRequirement": "visa-free",
+        "visaDetails": "Canadians can visit Japan visa-free for up to 90 days for tourism.",
         "startDate": "2026-03-15",
         "endDate": "2026-03-20",
         "days": 5,
@@ -59,7 +62,14 @@ If you generate a trip, it MUST follow this specific JSON schema format exactly:
     }
 }
 
-Use realistic locations, coordinates, and prices for whatever the user requested. If any properties don't make sense to include, you can omit them, but keep the core ones like id, type, layer, day (int), name, position, and data.`;
+ Use realistic locations, coordinates, and prices for whatever the user requested. If any properties don't make sense to include, you can omit them, but keep the core ones like id, type, layer, day (int), name, position, and data.
+
+CRITICAL INSTRUCTION - BUDGET AND FLIGHTS: If the user explicitly specifies a budget or budget range, you MUST set \`trip.summary.estimatedBudget\` strictly to that exact numeric amount WITHOUT ANY ROUNDING (e.g., if the user says 2576, it MUST be exactly 2576, NOT 2575). Otherwise, you MUST generate a realistic \`estimatedBudget\` based on the destination and duration. You MUST ALWAYS include at least one 'transport' card for round-trip flights or major transit to the destination, and include a realistic flight price in its \`data.price\` field. All cards with a monetary cost (stays, activities, flights) MUST have a realistic \`data.price\` number so the frontend can calculate the total budget accurately.
+
+CRITICAL INSTRUCTION - VISA INFO: Always analyze the requested destination and provide the \`country\` name. Furthermore, determine the visa requirements for a Canadian passport holder visiting that country. Set \`visaRequirement\` strictly to one of: "visa-free", "visa-on-arrival", "visa-required", or "other". Provide a brief, helpful explanation in \`visaDetails\`.
+Make sure you NEVER swap latitude (lat) and longitude (lng). Latitude must be between -90 and 90, and longitude between -180 and 180. For example, Tokyo is roughly lat: 35.68, lng: 139.69.
+
+CRITICAL INSTRUCTION: You MUST generate at least one stay card AND at least one activity card for EVERY SINGLE DAY of the specified trip duration. Do not leave any days empty! If the user stays at the same hotel for multiple days, you must create a separate stay card for that hotel for EACH day they are there (e.g., day 1: hotel X, day 2: hotel X, etc.).`;
 
 async function handler(req, res) {
     // SSE Headers
@@ -130,7 +140,7 @@ async function handler(req, res) {
             model: 'gemini-2.5-flash',
             contents: contents,
             config: {
-                systemInstruction: systemInstruction,
+                systemInstruction: systemInstruction + `\n\nIMPORTANT: The current date is ${new Date().toISOString().split('T')[0]}. All plans, recommendations, and trips MUST use dates in the future relative to this current date unless the user explicitly requests otherwise.`,
                 temperature: 0.7,
                 responseMimeType: "application/json"
             }
