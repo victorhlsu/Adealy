@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useLocation } from "wouter";
 import maplibregl from "maplibre-gl";
 import { useAuth0 } from "@auth0/auth0-react";
@@ -21,10 +21,12 @@ import {
   Footprints,
   Car,
   Bike,
-  UserPlus,
   Mail,
   Users,
   Lock,
+  User as UserIcon,
+  UserPlus,
+  ExternalLink
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
@@ -36,17 +38,20 @@ import { cn } from "@/lib/utils";
 import type { Trip, TripCard } from "@/types/trip";
 import { ModeToggle } from "@/components/mode-toggle";
 import { supabase } from "@/lib/supabase";
+import { getOptimizedImageUrl } from "@/lib/cloudinary";
 
 export default function PlannerPage({ roomId }: { roomId?: string }) {
   const [, setLocation] = useLocation();
 
   const [prompt, setPrompt] = useState("");
   const [aiStatus, setAiStatus] = useState<'idle' | 'thinking' | 'cooldown'>('idle');
-  const [streamStatus, setStreamStatus] = useState<{ step: number, total: number, message: string } | null>(null);
+  const [aiPromptedBy, setAiPromptedBy] = useState<string | null>(null);
   const [members, setMembers] = useState<any[]>([]);
   const [isOwner, setIsOwner] = useState(false);
   const [accessDenied, setAccessDenied] = useState(false);
   const [roomName, setRoomName] = useState("New Trip");
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [editedName, setEditedName] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [isInviting, setIsInviting] = useState(false);
   const [inviteMessage, setInviteMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -58,6 +63,30 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   const [profileData, setProfileData] = useState<any>(null);
 
   const { user, isAuthenticated } = useAuth0();
+  useEffect(() => {
+    if (user?.sub) {
+        supabase.from('user_profiles').select('*').eq('auth0_id', user.sub).single().then(({data}) => {
+            if (data) setProfileData(data);
+        });
+    }
+  }, [user?.sub]);
+
+  const userVisaRequirement = useMemo(() => {
+      if (!trip?.destination || !profileData?.passport_country) return null;
+      
+      const pass = profileData.passport_country.toLowerCase();
+      const dest = trip.destination.toLowerCase();
+      
+      if (['usa', 'can', 'gbr', 'aus'].includes(pass)) {
+          if (dest.includes('france') || dest.includes('germany') || dest.includes('japan')) return 'visa-free';
+      }
+      if (pass === 'ind') {
+         if (dest.includes('usa') || dest.includes('uk') || dest.includes('canada')) return 'visa-required';
+         if (dest.includes('thailand') || dest.includes('indonesia')) return 'visa-on-arrival';
+      }
+      
+      return trip?.visaRequirement || 'unknown';
+  }, [profileData?.passport_country, trip]);
 
   useEffect(() => {
     async function loadProfile() {
@@ -207,6 +236,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
       const { data: stateData } = await supabase.from('room_state').select('*').eq('room_id', roomId).single();
       if (stateData) {
         setAiStatus(stateData.ai_status || 'idle');
+        setAiPromptedBy(stateData.last_prompted_by || null);
         if (stateData.focused_view) setViewMode(stateData.focused_view as any);
       } else {
         await supabase.from('room_state').insert({ room_id: roomId });
@@ -229,6 +259,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'room_state', filter: `room_id=eq.${roomId}` }, (payload: any) => {
           const newState = payload.new;
           setAiStatus(newState.ai_status || 'idle');
+          setAiPromptedBy(newState.last_prompted_by || null);
           if (newState.focused_view) setViewMode(newState.focused_view as any);
         })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'room_members', filter: `room_id=eq.${roomId}` }, () => {
@@ -261,20 +292,8 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
     if (error) console.error("Failed to save message:", error);
 
     if (currentPrompt.toLowerCase().includes('@adealy')) {
-      // Simulate the 5-step animation before hitting the real API
       setAiStatus('thinking');
-      try {
-        const { mockStreamGenerator } = await import('@/services/mock-trip-service');
-        for await (const chunk of mockStreamGenerator(currentPrompt)) {
-          if (chunk.type === 'progress') {
-            setStreamStatus({ step: chunk.step, total: chunk.totalSteps, message: chunk.message });
-          }
-        }
-      } catch (err) {
-        console.warn("Mock stream failed", err);
-      } finally {
-        setStreamStatus(null);
-      }
+      setAiPromptedBy(user?.sub || null);
 
       // Now hit the real backend
       fetch('/api/chat', {
@@ -282,6 +301,23 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ room_id: roomId, prompt: currentPrompt, auth0_id: user?.sub })
       }).catch(err => console.error("Chat API error:", err));
+    }
+  };
+
+  const handleSaveRoomName = async () => {
+    if (!editedName.trim() || !roomId || !isOwner) {
+       setIsEditingName(false);
+       return;
+    }
+    
+    // Optimistic update
+    setRoomName(editedName);
+    setIsEditingName(false);
+    
+    // Only update room name in DB
+    const { error } = await supabase.from('rooms').update({ name: editedName }).eq('id', roomId);
+    if (error) {
+       console.error("Failed to update room name:", error);
     }
   };
 
@@ -365,12 +401,18 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 
       {/* 1. Left Sidebar - Layers & Overview */}
       <aside className="w-[280px] bg-sidebar border-r border-sidebar-border flex flex-col shrink-0 z-20">
-        <div className="p-4 border-b border-sidebar-border flex items-center justify-between">
+        <div 
+          className="p-4 border-b border-sidebar-border flex items-center justify-between cursor-pointer hover:bg-sidebar-accent/50 transition-colors group"
+          onClick={() => setLocation("/dashboard")}
+        >
           <div className="flex items-center gap-2">
-            <div className="h-8 w-8 bg-primary rounded-lg flex items-center justify-center shadow-lg shadow-primary/20">
-              <span className="text-primary-foreground font-bold">A</span>
+            <div className="h-8 w-8 bg-white rounded-lg flex items-center justify-center shadow-lg overflow-hidden">
+              <img src="/logo.png" alt="Adealy" className="h-full w-full object-cover" />
             </div>
-            <span className="font-bold text-lg tracking-tight">Adealy</span>
+            <span className="font-bold text-lg tracking-tight group-hover:text-primary transition-colors">Adealy</span>
+          </div>
+          <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
+            Dashboard
           </div>
         </div>
 
@@ -516,7 +558,30 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
           {/* Trip Title & Status */}
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
-              <h1 className="font-bold text-sm tracking-wide">{trip?.title || roomName}</h1>
+              {isEditingName ? (
+                 <input 
+                    type="text"
+                    value={editedName}
+                    onChange={e => setEditedName(e.target.value)}
+                    onBlur={handleSaveRoomName}
+                    onKeyDown={e => e.key === 'Enter' && handleSaveRoomName()}
+                    autoFocus
+                    className="font-bold text-sm tracking-wide bg-transparent border-b border-primary outline-none px-1 py-0.5 min-w-[150px]"
+                 />
+              ) : (
+                 <h1 
+                    className={cn("font-bold text-sm tracking-wide", isOwner ? "cursor-pointer hover:text-primary transition-colors" : "")}
+                    onClick={() => {
+                        if (isOwner) {
+                            setEditedName(roomName);
+                            setIsEditingName(true);
+                        }
+                    }}
+                    title={isOwner ? "Click to edit trip name" : ""}
+                 >
+                    {roomName}
+                 </h1>
+              )}
               <Badge variant="secondary" className="bg-muted text-muted-foreground border-0 text-[10px] px-1.5 h-5">LIVE</Badge>
               {trip?.visaRequirement && (
                 <div title={trip.visaDetails}>
@@ -531,6 +596,38 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                     )}
                   >
                     {trip.visaRequirement.replace(/-/g, ' ')}
+                  </Badge>
+                </div>
+              )}
+              {trip?.destination && profileData?.passport_country && userVisaRequirement && userVisaRequirement !== 'unknown' && (
+                <div title={`Based on your ${profileData.passport_country} passport`}>
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "text-[10px] px-1.5 h-5 uppercase border-0 cursor-help ml-2",
+                      userVisaRequirement === 'visa-free' ? 'bg-emerald-500/10 text-emerald-500' :
+                        userVisaRequirement === 'visa-on-arrival' ? 'bg-amber-500/10 text-amber-500' :
+                          userVisaRequirement === 'visa-required' ? 'bg-rose-500/10 text-rose-500' :
+                            'bg-slate-500/10 text-slate-500'
+                    )}
+                  >
+                    {userVisaRequirement.replace(/-/g, ' ')}
+                  </Badge>
+                </div>
+              )}
+              {trip?.destination && profileData?.passport_country && userVisaRequirement && userVisaRequirement !== 'unknown' && (
+                <div title={`Based on your ${profileData.passport_country} passport`}>
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "text-[10px] px-1.5 h-5 uppercase border-0 cursor-help ml-2",
+                      userVisaRequirement === 'visa-free' ? 'bg-emerald-500/10 text-emerald-500' :
+                        userVisaRequirement === 'visa-on-arrival' ? 'bg-amber-500/10 text-amber-500' :
+                          userVisaRequirement === 'visa-required' ? 'bg-rose-500/10 text-rose-500' :
+                            'bg-slate-500/10 text-slate-500'
+                    )}
+                  >
+                    {userVisaRequirement.replace(/-/g, ' ')}
                   </Badge>
                 </div>
               )}
@@ -702,7 +799,9 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                 <div className="absolute top-8 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-4">
                   <div className="bg-blue-600 text-white px-4 py-2 rounded-full shadow-2xl flex items-center gap-3 backdrop-blur-md border border-white/20">
                     <Zap className="h-4 w-4 animate-pulse fill-current" />
-                    <span className="text-xs font-bold uppercase tracking-wide">Adealy is designing your trip...</span>
+                    <span className="text-xs font-bold uppercase tracking-wide">
+                        Adealy is designing {aiPromptedBy && members.find(m => m.user_id === aiPromptedBy)?.user_profiles?.first_name ? `${members.find(m => m.user_id === aiPromptedBy)?.user_profiles?.first_name}'s` : (aiPromptedBy === user?.sub ? 'your' : 'the')} trip...
+                    </span>
                   </div>
                 </div>
               )}
@@ -730,7 +829,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                     Itinerary Draft
                   </Badge>
                   <h1 className="font-serif text-5xl md:text-7xl font-light text-foreground tracking-tight leading-[0.9]">
-                    {trip?.title || "Kyoto, Japan"}
+                    {roomName}
                   </h1>
                   <p className="text-lg md:text-xl text-muted-foreground font-light max-w-lg mx-auto leading-relaxed">
                     A curated journey through the ancient capital, blending modern aesthetics with traditional charm.
@@ -836,13 +935,46 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                                     <div className="text-sm text-muted-foreground leading-relaxed line-clamp-2 md:line-clamp-none">{card.data.description}</div>
                                   </div>
 
-                                  {card.type === 'transport' && card.data.from && card.data.to && (
-                                    <div className="mt-4 flex items-center gap-3 text-xs font-medium text-muted-foreground bg-muted/50 p-3 rounded-lg border border-border/50">
-                                      <div className="flex items-center gap-2"><MapIcon className="h-3.5 w-3.5" /> {card.data.from.name || "Origin"}</div>
-                                      <ArrowRight className="h-3 w-3 text-primary/50" />
-                                      <div className="flex items-center gap-2"><MapIcon className="h-3.5 w-3.5" /> {card.data.to.name || "Destination"}</div>
+                                  {/* Cloudinary-optimized image for stay and activity cards */}
+                                  {card.data.imageUrl && card.type !== 'transport' && (
+                                    <div className="rounded-xl overflow-hidden h-40 w-full mt-1 border border-border/30 shadow-inner">
+                                      <img
+                                        src={getOptimizedImageUrl(card.data.imageUrl, 800, 400)}
+                                        alt={card.name}
+                                        className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                                        loading="lazy"
+                                      />
                                     </div>
                                   )}
+
+
+                                  {card.type === 'transport' && card.data.from && card.data.to && (() => {
+                                    const mode = card.data.mode || 'driving';
+                                    const travelmode = mode === 'walking' ? 'walking' : mode === 'transit' ? 'transit' : 'driving';
+                                    const origin = `${card.data.from.lat},${card.data.from.lng}`;
+                                    const dest = `${card.data.to.lat},${card.data.to.lng}`;
+                                    const mapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${dest}&travelmode=${travelmode}`;
+                                    return (
+                                      <div className="mt-4 space-y-2">
+                                        <div className="flex items-center gap-3 text-xs font-medium text-muted-foreground bg-muted/50 p-3 rounded-lg border border-border/50">
+                                          <div className="flex items-center gap-2"><MapIcon className="h-3.5 w-3.5" /> {card.data.from.name || "Origin"}</div>
+                                          <ArrowRight className="h-3 w-3 text-primary/50 shrink-0" />
+                                          <div className="flex items-center gap-2"><MapIcon className="h-3.5 w-3.5" /> {card.data.to.name || "Destination"}</div>
+                                        </div>
+                                        <a
+                                          href={mapsUrl}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="flex items-center gap-2 text-xs font-semibold text-blue-500 hover:text-blue-400 transition-colors bg-blue-500/10 border border-blue-500/20 rounded-lg px-3 py-2 w-fit"
+                                          onClick={(e) => e.stopPropagation()}
+                                        >
+                                          <ExternalLink className="h-3 w-3" />
+                                          Open in Google Maps ({travelmode})
+                                        </a>
+                                      </div>
+                                    );
+                                  })()}
+
 
                                   <div className="flex items-center justify-end pt-2 opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0">
                                     <Button size="sm" variant="ghost" className="text-xs hover:text-primary gap-1" onClick={() => handleAddToCart(card)}>
@@ -1013,24 +1145,82 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 
           ) : (
             /* Chat Interface */
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            <div className="flex-1 overflow-y-auto p-4 space-y-6">
               {messages.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center opacity-30 text-center px-8">
-                  <MapIcon className="h-12 w-12 mb-4" />
-                  <h3 className="text-lg font-bold mb-2">Design your masterpiece</h3>
-                  <p className="text-sm">Ask me to plan a trip to anywhere in the world.</p>
+                <div className="h-full flex flex-col items-center justify-center opacity-30 text-center px-8 text-muted-foreground">
+                  <div className="h-16 w-16 bg-white rounded-full flex items-center justify-center mb-4 shadow-lg overflow-hidden border border-border">
+                    <img src="/logo.png" alt="Adealy" className="h-full w-full object-cover" />
+                  </div>
+                  <h3 className="text-lg font-bold mb-2">I am Adealy</h3>
+                  <p className="text-sm">Your AI travel architect.</p>
+                  <p className="text-xs mt-2">Mention @Adealy to start planning.</p>
                 </div>
               ) : (
-                messages.map((msg, i) => (
-                  <div key={i} className={cn("flex flex-col gap-2", !msg.is_ai ? "items-end" : "items-start")}>
-                    <div className={cn(
-                      "max-w-[85%] text-sm p-3 rounded-2xl shadow-sm leading-relaxed",
-                      !msg.is_ai ? "bg-muted text-foreground rounded-tr-sm" : "bg-primary/10 text-primary rounded-tl-sm border border-primary/20"
-                    )}>
-                      <MarkdownText content={msg.content} />
+                messages.map((msg, i) => {
+                  const isAi = msg.is_ai;
+                  // Try to find the sender's details from members
+                  const senderMember = members.find(m => m.user_id === msg.sender_id);
+                  const senderProfile = senderMember?.user_profiles;
+                  const senderName = isAi ? 'Adealy' : (senderProfile?.first_name ? `${senderProfile.first_name} ${senderProfile.last_name || ''}`.trim() : (msg.sender_id === user?.sub ? 'You' : 'Collaborator'));
+                  
+                  return (
+                    <div key={i} className={cn("flex w-full gap-3", !isAi ? "justify-end" : "justify-start")}>
+                      {isAi && (
+                        <div className="flex-shrink-0 h-8 w-8 bg-white rounded-full flex items-center justify-center shadow-md overflow-hidden border border-border">
+                          <img src="/logo.png" alt="Adealy" className="h-full w-full object-cover" />
+                        </div>
+                      )}
+                      
+                      <div className={cn("flex flex-col max-w-[80%]", !isAi ? "items-end" : "items-start")}>
+                         <div className="flex items-center gap-2 mb-1 px-1">
+                            <span className="text-[10px] font-bold text-muted-foreground">{senderName}</span>
+                         </div>
+                         <div className={cn(
+                            "text-sm p-3 shadow-md leading-relaxed",
+                            !isAi 
+                              ? "bg-blue-600 text-white rounded-2xl rounded-tr-sm" 
+                              : "bg-card text-card-foreground rounded-2xl rounded-tl-sm border border-border"
+                         )}>
+                            <MarkdownText content={msg.content} />
+                         </div>
+                      </div>
+
+                      {!isAi && (
+                         <div className="flex-shrink-0 h-8 w-8 bg-blue-600 rounded-full flex items-center justify-center shadow-md overflow-hidden border border-border">
+                            {msg.sender_id === user?.sub && user?.picture ? (
+                                <img src={user.picture} alt="Avatar" className="h-full w-full object-cover" />
+                            ) : senderProfile?.avatar_url ? (
+                                 <img src={senderProfile.avatar_url} alt="Avatar" className="h-full w-full object-cover" />
+                            ) : (
+                                <UserIcon className="h-4 w-4 text-white" />
+                            )}
+                         </div>
+                      )}
                     </div>
-                  </div>
-                ))
+                  );
+                })
+              )}
+              {aiStatus === 'thinking' && (
+                 <div className="flex w-full gap-3 justify-start opacity-70">
+                    <div className="flex-shrink-0 h-8 w-8 bg-primary rounded-full flex items-center justify-center shadow-md animate-pulse">
+                       <span className="text-primary-foreground font-bold text-sm">A</span>
+                    </div>
+                    <div className="flex flex-col items-start max-w-[80%]">
+                       <div className="text-sm p-3 shadow-sm leading-relaxed bg-card text-muted-foreground rounded-2xl rounded-tl-sm border border-border italic flex items-center gap-2">
+                          <div className="flex gap-1 mr-1">
+                             <span className="h-1.5 w-1.5 bg-primary/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                             <span className="h-1.5 w-1.5 bg-primary/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                             <span className="h-1.5 w-1.5 bg-primary/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                          </div>
+                          Adealy is designing {aiPromptedBy && members.find(m => m.user_id === aiPromptedBy)?.user_profiles?.first_name ? `${members.find(m => m.user_id === aiPromptedBy)?.user_profiles?.first_name}'s` : (aiPromptedBy === user?.sub ? 'your' : 'the')} trip...
+                       </div>
+                    </div>
+                 </div>
+              )}
+              {aiStatus === 'cooldown' && (
+                 <div className="flex w-full justify-center my-2">
+                    <span className="text-[10px] uppercase font-bold text-muted-foreground bg-muted px-2 py-1 rounded-full">Adealy is cooling down...</span>
+                 </div>
               )}
               <div ref={messagesEndRef} />
             </div>

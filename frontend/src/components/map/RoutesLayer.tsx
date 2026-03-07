@@ -135,7 +135,10 @@ export function RoutesLayer({ cards, enabled, visibleDay, activeLayer }: { cards
         // No, the closure `cleanup` returned from the *previous* effect execution will have access to the `ids` from that execution.
         // So this is correct.
 
-        if (!geoms?.length) return
+        if (!geoms?.length) {
+            cleanup()
+            return    
+        }
 
         for (const g of geoms) {
             const id = g.id // use card ID
@@ -166,9 +169,9 @@ export function RoutesLayer({ cards, enabled, visibleDay, activeLayer }: { cards
                     source: sourceId,
                     layout: { 'line-join': 'round', 'line-cap': 'round' },
                     paint: {
-                        'line-color': '#000000', // Dark casing for contrast
-                        'line-width': 5,
-                        'line-opacity': 0.5,
+                        'line-color': '#1E293B', // Dark casing for contrast
+                        'line-width': 4,
+                        'line-opacity': 0.8,
                     },
                 } as any)
 
@@ -178,10 +181,9 @@ export function RoutesLayer({ cards, enabled, visibleDay, activeLayer }: { cards
                     source: sourceId,
                     layout: { 'line-join': 'round', 'line-cap': 'round' },
                     paint: {
-                        'line-color': '#10b981', // Emerald for transport
-                        'line-width': 3,
-                        'line-opacity': 0.9,
-                        'line-dasharray': [2, 1] // Dashed line for transit
+                        'line-color': '#3B82F6', // Blue for routing
+                        'line-width': 2,
+                        'line-opacity': 1.0,
                     },
                 } as any)
             }

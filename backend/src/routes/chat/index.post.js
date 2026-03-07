@@ -27,6 +27,23 @@ If you generate a trip, it MUST follow this specific JSON schema format exactly:
         },
         "cards": [
             {
+                "id": "card_trans_000",
+                "type": "transport",
+                "layer": "transport",
+                "day": 1,
+                "name": "Arrive and Transit to Hotel",
+                "position": { "lat": 35.5494, "lng": 139.7798 },
+                "data": {
+                    "mode": "transit",
+                    "price": 20,
+                    "description": "Limousine Bus from Haneda Airport to Hotel",
+                    "startTime": "13:00",
+                    "endTime": "14:30",
+                    "from": { "name": "Haneda Airport (HND)", "lat": 35.5494, "lng": 139.7798, "cardId": "airport_HND" },
+                    "to": { "name": "Tawaraya Ryokan", "lat": 35.0116, "lng": 135.7681, "cardId": "card_stay_001" }
+                }
+            },
+            {
                 "id": "card_stay_001",
                 "type": "stay",
                 "layer": "stays",
@@ -37,7 +54,8 @@ If you generate a trip, it MUST follow this specific JSON schema format exactly:
                     "price": 850,
                     "description": "Historic ryokan in central Kyoto",
                     "imageUrl": "https://images.unsplash.com/photo-1542314831-068cd1dbfeeb?auto=format&fit=crop&q=80&w=1000",
-                    "startTime": "15:00"
+                    "startTime": "15:00",
+                    "endTime": "10:00"
                 }
             },
             {
@@ -48,8 +66,8 @@ If you generate a trip, it MUST follow this specific JSON schema format exactly:
                 "name": "Fushimi Inari Shrine",
                 "position": { "lat": 34.9671, "lng": 135.7727 },
                 "data": {
-                    "startTime": "09:00",
-                    "duration": 120,
+                    "startTime": "16:00",
+                    "endTime": "18:00",
                     "price": 0,
                     "description": "Famous shrine with thousands of torii gates",
                     "imageUrl": "https://images.unsplash.com/photo-1478436127897-769e1b3f0f36?auto=format&fit=crop&q=80&w=1000"
@@ -59,7 +77,17 @@ If you generate a trip, it MUST follow this specific JSON schema format exactly:
     }
 }
 
-Use realistic locations, coordinates, and prices for whatever the user requested. If any properties don't make sense to include, you can omit them, but keep the core ones like id, type, layer, day (int), name, position, and data.`;
+Use realistic locations, coordinates, and prices for whatever the user requested. If any properties don't make sense to include, you can omit them, but keep the core ones like id, type, layer, day (int), name, position, and data.
+
+CRITICAL INSTRUCTION - MAP ROUTING AND DAILY SCHEDULE:
+1. When generating a full trip, Day 1 MUST start with a 'transport' card depicting arrival from the region's main Airport to the Hotel.
+2. The final Day MUST end with a 'transport' card depicting departure from the Hotel to the region's main Airport.
+3. You MUST generate 'transport' cards between EVERY sequential location (e.g., Hotel -> Activity 1, Activity 1 -> Activity 2, Activity 2 -> Hotel). The day MUST begin and end at the Hotel.
+4. Each 'transport' card MUST include \`data.from\` and \`data.to\`. These must contain exact 'lat' and 'lng' float coordinates, 'name', and 'cardId' linking them together. This is absolutely critical for the UI to draw OSRM routing lines on the Map.
+5. Provide realistic \`startTime\` and \`endTime\` (HH:MM format) for EVERY card to ensure the schedule works.
+
+CRITICAL INSTRUCTION - CLOUDINARY IMAGES:
+For \`data.imageUrl\` on stays and activities, always prefer high-quality image URLs from sources like Unsplash. The frontend will automatically pipe these through Cloudinary for formatting, so provide raw, high resolution direct HTTPs image links.`;
 
 async function handler(req, res) {
     // We are no longer using SSE directly to the frontend because we rely on Supabase Realtime!
@@ -127,12 +155,24 @@ async function handler(req, res) {
             parts: [{ text: m.content }]
         }));
 
-        console.log('Calling Gemini API...');
+        let userName = 'Traveler';
+        try {
+            const { data: userProfile } = await supabase.from('user_profiles').select('first_name').eq('auth0_id', auth0_id).single();
+            if (userProfile && userProfile.first_name) {
+                userName = userProfile.first_name;
+            }
+        } catch (err) {
+            console.error('Failed to get user profile name:', err);
+        }
+
+        const dynamicSystemInstruction = systemInstruction + `\n\n-----------------\nYou are currently responding to a user named ${userName}. ALWAYS greet them personally by this name when introducing a plan or responding to an initial request!`;
+
+        console.log('Calling Gemini API for user:', userName);
         const result = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: contents,
             config: {
-                systemInstruction: systemInstruction,
+                systemInstruction: dynamicSystemInstruction,
                 temperature: 0.7,
                 responseMimeType: "application/json"
             }

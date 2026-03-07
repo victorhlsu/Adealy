@@ -1,6 +1,6 @@
 import { useAuth0 } from '@auth0/auth0-react';
 import { Button } from '@/components/ui/button';
-import { PlaneTakeoff, Globe, ShieldCheck } from 'lucide-react';
+import { Globe, ShieldCheck } from 'lucide-react';
 import { Link } from 'wouter';
 
 export default function LandingPage() {
@@ -18,11 +18,11 @@ export default function LandingPage() {
     <div className="min-h-screen bg-background flex flex-col">
       <header className="px-6 py-4 flex justify-between items-center border-b bg-card/50 backdrop-blur-sm sticky top-0 z-50">
         <div className="flex items-center gap-2">
-          <div className="bg-primary/10 p-2 rounded-xl">
-            <PlaneTakeoff className="w-6 h-6 text-primary" />
+          <div className="bg-white p-1 rounded-xl shadow-sm border border-border overflow-hidden w-10 h-10 flex items-center justify-center">
+            <img src="/logo.png" alt="Adealy" className="w-full h-full object-cover" />
           </div>
           <span className="text-xl font-bold bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
-            SkyWay Planner
+            Adealy
           </span>
         </div>
         <nav>
@@ -62,7 +62,7 @@ export default function LandingPage() {
                <Link href="/planner">
                  <Button size="lg" className="h-14 px-8 text-lg rounded-full">
                    Continue Planning
-                   <PlaneTakeoff className="ml-2 w-5 h-5" />
+                   <Globe className="ml-2 w-5 h-5" />
                  </Button>
                </Link>
             ) : (
@@ -80,7 +80,7 @@ export default function LandingPage() {
         <div className="grid md:grid-cols-3 gap-8 pt-16 border-t w-full">
           <div className="flex flex-col items-center text-center space-y-3 p-6 rounded-2xl bg-card border shadow-sm">
             <div className="bg-primary/10 p-3 rounded-full">
-              <PlaneTakeoff className="w-6 h-6 text-primary" />
+              <Globe className="w-6 h-6 text-primary" />
             </div>
             <h3 className="font-semibold text-lg">Smart Itineraries</h3>
             <p className="text-sm text-muted-foreground">Keep all your flights and hotel bookings in one secure, easily accessible place.</p>

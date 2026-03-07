@@ -22,8 +22,8 @@ export default function AuthCallback() {
         if (res.ok) {
           const data = await res.json();
           if (data.exists) {
-            // Profile exists, go to planner
-            setLocation('/planner');
+            // Profile exists, go to dashboard
+            setLocation('/dashboard');
           } else {
             // New user, go to onboarding
             setLocation('/onboarding');
@@ -34,11 +34,11 @@ export default function AuthCallback() {
         } else {
           // Fallback on error
           console.error("Failed to fetch profile status");
-          setLocation('/planner');
+          setLocation('/dashboard');
         }
       } catch (error) {
         console.error("Error checking profile:", error);
-        setLocation('/planner');
+        setLocation('/dashboard');
       }
     }
 

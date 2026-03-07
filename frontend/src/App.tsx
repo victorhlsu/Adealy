@@ -9,6 +9,7 @@ import ProfilePage from "@/pages/profile";
 import LandingPage from "@/pages/landing";
 import OnboardingPage from "@/pages/onboarding";
 import AuthCallback from "@/pages/auth-callback";
+import DashboardPage from "@/pages/dashboard";
 import { AppStateProvider } from "@/state/app-state";
 
 import { ThemeProvider } from "@/components/theme-provider";
@@ -36,6 +37,9 @@ function App() {
               </Route>
               <Route path="/auth-callback" component={AuthCallback} />
               <Route path="/onboarding" component={OnboardingPage} />
+              <Route path="/dashboard">
+                {!isAuthenticated ? <Redirect to="/" /> : <DashboardPage />}
+              </Route>
               <Route path="/planner">
                 {!isAuthenticated ? <Redirect to="/" /> : <PlannerPage />}
               </Route>

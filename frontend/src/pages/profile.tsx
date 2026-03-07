@@ -7,7 +7,8 @@ import {
     FileText,
     Plane,
     ChevronLeft,
-    Save
+    Save,
+    Camera
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,13 +23,18 @@ export default function ProfilePage() {
     const { user, isAuthenticated, isLoading: authLoading } = useAuth0();
     
     const [isLoading, setIsLoading] = useState(false);
+    const [isFetchingProfile, setIsFetchingProfile] = useState(true);
+    const [isEditingPassport, setIsEditingPassport] = useState(false);
     const [profileData, setProfileData] = useState<any>(null);
     const { defaultCurrency, setDefaultCurrency } = useAppState();
 
 
     useEffect(() => {
         async function loadProfile() {
-            if (!isAuthenticated || !user?.sub) return;
+            if (!isAuthenticated || !user?.sub) {
+                setIsFetchingProfile(false);
+                return;
+            }
             
             try {
                 const res = await fetch(`/api/users/profile?auth0_id=${user.sub}`);
@@ -40,13 +46,15 @@ export default function ProfilePage() {
                 }
             } catch (e) {
                 console.error("Failed to load profile", e);
+            } finally {
+                setIsFetchingProfile(false);
             }
         }
         
         loadProfile();
     }, [isAuthenticated, user]);
 
-    const handleChange = (field: string, value: string) => {
+    const handleChange = (field: string, value: string | number) => {
         setProfileData((prev: any) => ({ ...prev, [field]: value }));
     };
 
@@ -64,7 +72,8 @@ export default function ProfilePage() {
                     last_name: profileData?.last_name || user.family_name || (user.name ? user.name.split(' ').slice(1).join(' ') : ""),
                     departure_airport: profileData?.departure_airport || "",
                     passport_country: profileData?.passport_country || "",
-                    passport_expiry_date: profileData?.passport_expiry_date || ""
+                    passport_expiry_date: profileData?.passport_expiry_date || "",
+                    avatar_url: profileData?.avatar_url || user.picture || ""
                 })
             });
             
@@ -80,7 +89,14 @@ export default function ProfilePage() {
         }
     };
 
-    if (authLoading) return null;
+    if (authLoading || isFetchingProfile) {
+        return (
+            <div className="min-h-screen bg-background flex flex-col items-center justify-center">
+                <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+                <p className="mt-4 text-muted-foreground animate-pulse text-sm">Loading profile...</p>
+            </div>
+        );
+    }
 
     return (
         <div className="min-h-screen bg-background text-foreground font-sans flex flex-col items-center">
@@ -112,6 +128,25 @@ export default function ProfilePage() {
                             <p className="text-sm text-gray-500">Your basic traveler identity.</p>
                         </div>
                     </div>
+                    
+                    <div className="flex flex-col items-center mb-6 space-y-3">
+                        <div className="h-24 w-24 rounded-full overflow-hidden border-4 border-border relative group cursor-pointer" onClick={() => {
+                            const url = prompt("Enter new Avatar URL:");
+                            if (url) handleChange("avatar_url", url);
+                        }}>
+                           {(profileData?.avatar_url || user?.picture) ? (
+                               <img src={profileData?.avatar_url || user?.picture} alt="Avatar" className="w-full h-full object-cover" />
+                           ) : (
+                               <div className="w-full h-full bg-muted flex items-center justify-center">
+                                   <User className="h-10 w-10 text-muted-foreground" />
+                               </div>
+                           )}
+                           <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                               <Camera className="h-6 w-6 text-white" />
+                           </div>
+                        </div>
+                        <p className="text-xs text-muted-foreground">Click to update avatar</p>
+                    </div>
 
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
@@ -133,6 +168,16 @@ export default function ProfilePage() {
                             />
                         </div>
                     </div>
+
+                    <div className="space-y-2 pt-2">
+                        <label className="text-xs font-bold uppercase text-muted-foreground">Email Address</label>
+                        <Input 
+                            value={user?.email || ""} 
+                            readOnly
+                            disabled
+                            className="bg-muted border-border h-10 opacity-70 cursor-not-allowed" 
+                        />
+                    </div>
                 </section>
 
                 {/* Travel Documents */}
@@ -152,16 +197,42 @@ export default function ProfilePage() {
                             <FileText className="h-24 w-24" />
                         </div>
                         <div className="flex justify-between items-start relative z-10">
-                            <div className="space-y-1">
+                            <div className="space-y-1 w-full max-w-sm">
                                 <div className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Primary Passport</div>
-                                <div className="text-lg font-bold flex items-center gap-2">
-                                    {profileData?.passport_country || "Not specified"} <Badge variant="outline" className="text-[10px] bg-green-500/10 text-green-400 border-green-500/20">VALID</Badge>
-                                </div>
-                                <div className="text-sm text-muted-foreground font-mono">
-                                    Expires: {profileData?.passport_expiry_date ? new Date(profileData.passport_expiry_date).toLocaleDateString() : "Unknown"}
-                                </div>
+                                {isEditingPassport ? (
+                                    <select
+                                        value={profileData?.passport_country || ""}
+                                        onChange={(e) => handleChange("passport_country", e.target.value)}
+                                        className="w-full bg-muted border border-border h-10 rounded-md px-3 mt-2 text-sm text-foreground focus:outline-none"
+                                    >
+                                        <option value="" disabled>Select a country</option>
+                                        <option value="USA">United States</option>
+                                        <option value="CAN">Canada</option>
+                                        <option value="GBR">United Kingdom</option>
+                                        <option value="AUS">Australia</option>
+                                        <option value="IND">India</option>
+                                        <option value="DEU">Germany</option>
+                                        <option value="FRA">France</option>
+                                    </select>
+                                ) : (
+                                    <>
+                                        <div className="text-lg font-bold flex items-center gap-2">
+                                            {profileData?.passport_country || "Not specified"} <Badge variant="outline" className="text-[10px] bg-green-500/10 text-green-400 border-green-500/20">VALID</Badge>
+                                        </div>
+                                        <div className="text-sm text-muted-foreground font-mono">
+                                            Expires: {profileData?.passport_expiry_date ? new Date(profileData.passport_expiry_date).toLocaleDateString() : "Unknown"}
+                                        </div>
+                                    </>
+                                )}
                             </div>
-                            <Button variant="outline" size="sm" className="bg-muted/50 border-white/10 hover:bg-muted">Edit</Button>
+                            <Button 
+                                variant="outline" 
+                                size="sm" 
+                                className="bg-muted/50 border-white/10 hover:bg-muted"
+                                onClick={() => setIsEditingPassport(!isEditingPassport)}
+                            >
+                                {isEditingPassport ? 'Done' : 'Edit'}
+                            </Button>
                         </div>
                     </Card>
 
@@ -182,7 +253,7 @@ export default function ProfilePage() {
                         </div>
                     </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div className="space-y-2">
                             <label className="text-xs font-bold uppercase text-muted-foreground">Home Airport</label>
                             <Input 
@@ -206,24 +277,6 @@ export default function ProfilePage() {
                                 <option>JPY - Japanese Yen</option>
                             </select>
                         </div>
-
-                        <div className="space-y-2">
-                            <label className="text-xs font-bold uppercase text-muted-foreground">Preferred Airline Alliance</label>
-                            <div className="flex gap-2">
-                                <Badge variant="secondary" className="bg-blue-900/40 text-blue-200 hover:bg-blue-800/40 cursor-pointer border border-blue-500/30">Star Alliance</Badge>
-                                <Badge variant="outline" className="border-border text-muted-foreground hover:text-foreground cursor-pointer">OneWorld</Badge>
-                                <Badge variant="outline" className="border-border text-muted-foreground hover:text-foreground cursor-pointer">SkyTeam</Badge>
-                            </div>
-                        </div>
-
-                        <div className="space-y-2">
-                            <label className="text-xs font-bold uppercase text-muted-foreground">Hotel Tier</label>
-                            <div className="flex gap-2">
-                                <Badge variant="outline" className="border-border text-muted-foreground hover:text-foreground cursor-pointer">Budget</Badge>
-                                <Badge variant="secondary" className="bg-purple-900/40 text-purple-200 hover:bg-purple-800/40 cursor-pointer border border-purple-500/30">Luxury</Badge>
-                                <Badge variant="outline" className="border-border text-muted-foreground hover:text-foreground cursor-pointer">Boutique</Badge>
-                            </div>
-                        </div>
                     </div>
                 </section>
 
@@ -241,13 +294,21 @@ export default function ProfilePage() {
 
                     <Card className="bg-card border-border p-6 space-y-6">
                         <div className="space-y-4">
-                            <div className="flex justify-between">
+                            <div className="flex justify-between items-center">
                                 <label className="text-sm font-medium">Daily Spending Limit (per person)</label>
-                                <span className="text-sm font-bold text-pink-400">$350</span>
+                                <span className="text-sm font-bold text-pink-400">${profileData?.daily_budget || 350}</span>
                             </div>
-                            <div className="h-2 bg-black rounded-full overflow-hidden">
-                                <div className="h-full bg-pink-500 w-[40%]" />
-                            </div>
+                            
+                            <input 
+                                type="range" 
+                                min="50" 
+                                max="2000" 
+                                step="50"
+                                value={profileData?.daily_budget || 350}
+                                onChange={(e) => handleChange("daily_budget", parseInt(e.target.value))}
+                                className="w-full accent-pink-500 cursor-pointer h-2 bg-muted rounded-lg appearance-none"
+                            />
+                            
                             <p className="text-xs text-muted-foreground">Includes food, transport, and activities. Excludes flights and accommodation.</p>
                         </div>
                     </Card>

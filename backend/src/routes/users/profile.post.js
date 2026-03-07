@@ -41,6 +41,7 @@ const handler = async (req, res) => {
 			departure_airport,
 			passport_country,
 			passport_expiry_date,
+			avatar_url,
 		} = req.body;
 
 		if (!auth0_id) {
@@ -59,6 +60,7 @@ const handler = async (req, res) => {
 					departure_airport,
 					passport_country,
 					passport_expiry_date,
+					avatar_url,
 					updated_at: new Date().toISOString(),
 				},
 				{ onConflict: 'auth0_id' }

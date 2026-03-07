@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { PlaneTakeoff, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 export default function OnboardingPage() {
@@ -99,8 +99,8 @@ export default function OnboardingPage() {
 
       <div className="relative z-10 w-full max-w-xl mx-auto px-4 sm:px-6">
         <div className="text-center mb-8 backdrop-blur-sm bg-background/50 p-6 rounded-2xl border border-white/10 shadow-2xl">
-          <div className="inline-flex bg-primary/20 p-3 rounded-full mb-4 shadow-inner">
-            <PlaneTakeoff className="w-8 h-8 text-primary" />
+          <div className="inline-flex bg-white p-1 rounded-full mb-4 shadow-lg border border-border w-16 h-16 items-center justify-center overflow-hidden">
+            <img src="/logo.png" alt="Adealy" className="w-full h-full object-cover" />
           </div>
           <h1 className="text-3xl font-bold tracking-tight text-foreground">Welcome to Adealy</h1>
           <p className="text-muted-foreground mt-2 text-md">
