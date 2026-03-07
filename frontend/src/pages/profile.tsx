@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
+import { useAuth0 } from "@auth0/auth0-react";
 import {
     User,
     CreditCard,
@@ -17,16 +18,66 @@ import { ModeToggle } from "@/components/mode-toggle";
 
 export default function ProfilePage() {
     const [, setLocation] = useLocation();
+    const { user, isAuthenticated, isLoading: authLoading } = useAuth0();
+    
     const [isLoading, setIsLoading] = useState(false);
+    const [profileData, setProfileData] = useState<any>(null);
 
-    const handleSave = () => {
-        setIsLoading(true);
-        // Simulate save
-        setTimeout(() => {
-            setIsLoading(false);
-            setLocation("/");
-        }, 1000);
+    useEffect(() => {
+        async function loadProfile() {
+            if (!isAuthenticated || !user?.sub) return;
+            
+            try {
+                const res = await fetch(`/api/users/profile?auth0_id=${user.sub}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.exists) {
+                        setProfileData(data.data);
+                    }
+                }
+            } catch (e) {
+                console.error("Failed to load profile", e);
+            }
+        }
+        
+        loadProfile();
+    }, [isAuthenticated, user]);
+
+    const handleChange = (field: string, value: string) => {
+        setProfileData((prev: any) => ({ ...prev, [field]: value }));
     };
+
+    const handleSave = async () => {
+        if (!user?.sub) return;
+        
+        setIsLoading(true);
+        try {
+            const res = await fetch('/api/users/profile', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    auth0_id: user.sub,
+                    first_name: profileData?.first_name || user.given_name || (user.name ? user.name.split(' ')[0] : ""),
+                    last_name: profileData?.last_name || user.family_name || (user.name ? user.name.split(' ').slice(1).join(' ') : ""),
+                    departure_airport: profileData?.departure_airport || "",
+                    passport_country: profileData?.passport_country || "",
+                    passport_expiry_date: profileData?.passport_expiry_date || ""
+                })
+            });
+            
+            if (res.ok) {
+                const data = await res.json();
+                setProfileData(data.data);
+                setLocation("/");
+            }
+        } catch (e) {
+            console.error("Save failed", e);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    if (authLoading) return null;
 
     return (
         <div className="min-h-screen bg-background text-foreground font-sans flex flex-col items-center">
@@ -61,12 +112,22 @@ export default function ProfilePage() {
 
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                            <label className="text-xs font-bold uppercase text-muted-foreground">Full Name</label>
-                            <Input defaultValue="John Doe" className="bg-muted border-border h-10" />
+                            <label className="text-xs font-bold uppercase text-muted-foreground">First Name</label>
+                            <Input 
+                                value={profileData?.first_name || user?.given_name || (user?.name?.split(' ')[0]) || ""} 
+                                onChange={(e) => handleChange("first_name", e.target.value)}
+                                className="bg-muted border-border h-10" 
+                                placeholder="John"
+                            />
                         </div>
                         <div className="space-y-2">
-                            <label className="text-xs font-bold uppercase text-muted-foreground">Email</label>
-                            <Input defaultValue="john.doe@example.com" className="bg-muted border-border h-10" />
+                            <label className="text-xs font-bold uppercase text-muted-foreground">Last Name</label>
+                            <Input 
+                                value={profileData?.last_name || user?.family_name || (user?.name?.split(' ').slice(1).join(' ')) || ""} 
+                                onChange={(e) => handleChange("last_name", e.target.value)}
+                                className="bg-muted border-border h-10" 
+                                placeholder="Doe"
+                            />
                         </div>
                     </div>
                 </section>
@@ -91,9 +152,11 @@ export default function ProfilePage() {
                             <div className="space-y-1">
                                 <div className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Primary Passport</div>
                                 <div className="text-lg font-bold flex items-center gap-2">
-                                    United States of America <Badge variant="outline" className="text-[10px] bg-green-500/10 text-green-400 border-green-500/20">VALID</Badge>
+                                    {profileData?.passport_country || "Not specified"} <Badge variant="outline" className="text-[10px] bg-green-500/10 text-green-400 border-green-500/20">VALID</Badge>
                                 </div>
-                                <div className="text-sm text-muted-foreground font-mono">Expires: 12/2029</div>
+                                <div className="text-sm text-muted-foreground font-mono">
+                                    Expires: {profileData?.passport_expiry_date ? new Date(profileData.passport_expiry_date).toLocaleDateString() : "Unknown"}
+                                </div>
                             </div>
                             <Button variant="outline" size="sm" className="bg-muted/50 border-white/10 hover:bg-muted">Edit</Button>
                         </div>
@@ -116,10 +179,15 @@ export default function ProfilePage() {
                         </div>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div className="space-y-2">
                             <label className="text-xs font-bold uppercase text-muted-foreground">Home Airport</label>
-                            <Input defaultValue="JFK - John F. Kennedy Intl" className="bg-muted border-border h-10" />
+                            <Input 
+                                value={profileData?.departure_airport || ""} 
+                                onChange={(e) => handleChange("departure_airport", e.target.value)}
+                                className="bg-muted border-border h-10 uppercase" 
+                                maxLength={3} 
+                            />
                         </div>
 
                         <div className="space-y-2">

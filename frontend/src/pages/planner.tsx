@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useLocation } from "wouter";
+import { useAuth0 } from "@auth0/auth0-react";
 import {
   Map as MapIcon,
   Calendar,
@@ -16,32 +17,68 @@ import {
   Send,
   ShoppingBag,
   ArrowRight,
+  UserPlus,
+  Mail,
+  Users,
+  Lock,
 } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Map, MapControls, MapMarker, MarkerContent, MarkerPopup } from "@/components/ui/map";
 import { CountryLayer } from "@/components/map/CountryLayer";
 import { RoutesLayer } from "@/components/map/RoutesLayer";
 import { cn } from "@/lib/utils";
-import { streamTripGenerator } from "@/services/trip-service";
 import type { Trip, TripCard } from "@/types/trip";
 import { ModeToggle } from "@/components/mode-toggle";
+import { supabase } from "@/lib/supabase";
 
-export default function PlannerPage() {
+export default function PlannerPage({ roomId }: { roomId?: string }) {
   const [, setLocation] = useLocation();
 
   // State
   const [prompt, setPrompt] = useState("");
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [streamStatus, setStreamStatus] = useState<string>("");
+  const [aiStatus, setAiStatus] = useState<'idle' | 'thinking' | 'cooldown'>('idle');
+  const [members, setMembers] = useState<any[]>([]);
+  const [isOwner, setIsOwner] = useState(false);
+  const [accessDenied, setAccessDenied] = useState(false);
+  const [roomName, setRoomName] = useState("New Trip");
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [isInviting, setIsInviting] = useState(false);
+  const [inviteMessage, setInviteMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [trip, setTrip] = useState<Trip | null>(null);
   const [cards, setCards] = useState<TripCard[]>([]);
   const [cart, setCart] = useState<TripCard[]>([]);
-  const [messages, setMessages] = useState<{ role: 'user' | 'ai', content: string, cards?: TripCard[] }[]>([
-    { role: 'ai', content: "Hi! I'm your Adealy travel architect. Where shall we go next?" }
-  ]);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<any[]>([]);
+  const [profileData, setProfileData] = useState<any>(null);
+
+  const { user, isAuthenticated } = useAuth0();
+
+  useEffect(() => {
+    async function loadProfile() {
+      if (!isAuthenticated || !user?.sub) return;
+      try {
+        const res = await fetch(`/api/users/profile?auth0_id=${user.sub}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.exists) setProfileData(data.data);
+        }
+      } catch (e) {
+        console.error("Failed to load profile", e);
+      }
+    }
+    loadProfile();
+  }, [isAuthenticated, user]);
+
+  useEffect(() => {
+    if (!roomId && user?.sub) {
+       supabase.from('rooms').insert({ name: 'New Trip', created_by: user.sub }).select().single().then(({ data }: any) => {
+         if (data) {
+           setLocation(`/planner/${data.id}`);
+         }
+       });
+    }
+  }, [roomId, user?.sub, setLocation]);
 
   // UI State
   const [viewMode, setViewMode] = useState<'map' | 'timeline'>('map');
@@ -50,38 +87,137 @@ export default function PlannerPage() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const handleGenerate = async () => {
-    if (!prompt.trim()) return;
+  useEffect(() => {
+    if (!roomId || !user?.sub) return;
+    let channel: any;
 
-    // Add user message
-    setMessages(prev => [...prev, { role: 'user', content: prompt }]);
+    const initRoom = async () => {
+      // 1. Load members FIRST to check access
+      const { data: memData } = await supabase.from('room_members').select('*').eq('room_id', roomId);
+      if (memData) {
+         const me = memData.find((m: any) => m.user_id === user.sub);
+         if (!me) {
+           setAccessDenied(true);
+           return;
+         }
+         setMembers(memData);
+         if (me.role === 'owner') setIsOwner(true);
+      } else {
+        setAccessDenied(true);
+        return;
+      }
+
+      // 2. Load room details
+      const { data: rData } = await supabase.from('rooms').select('*').eq('id', roomId).single();
+      if (rData) setRoomName(rData.name);
+
+      // 3. Load history
+      const { data: history } = await supabase.from('messages').select('*').eq('room_id', roomId).order('created_at', { ascending: true });
+      if (history) {
+        const parsedMsgs: any[] = [];
+        for (const msg of history) {
+           if (msg.content.startsWith('__TRIP_DATA__:')) {
+             try {
+                const tripData = JSON.parse(msg.content.replace('__TRIP_DATA__:', ''));
+                setTrip(tripData);
+                setCards(tripData.cards || []);
+             } catch(e) {}
+           } else {
+             parsedMsgs.push(msg);
+           }
+        }
+        setMessages(parsedMsgs);
+      } else {
+        setMessages([{ is_ai: true, content: "Hi! I'm your Adealy travel architect. Where shall we go next?" }]);
+      }
+
+      // 4. Load room_state
+      const { data: stateData } = await supabase.from('room_state').select('*').eq('room_id', roomId).single();
+      if (stateData) {
+         setAiStatus(stateData.ai_status || 'idle');
+         if (stateData.focused_view) setViewMode(stateData.focused_view as any);
+      } else {
+         await supabase.from('room_state').insert({ room_id: roomId });
+      }
+
+      // 5. Subscribe to Realtime
+      channel = supabase.channel(`room_${roomId}`)
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `room_id=eq.${roomId}` }, (payload: any) => {
+          const newMsg = payload.new;
+          if (newMsg.content.startsWith('__TRIP_DATA__:')) {
+             try {
+               const tripData = JSON.parse(newMsg.content.replace('__TRIP_DATA__:', ''));
+               setTrip(tripData);
+               setCards(tripData.cards || []);
+             } catch(e) {}
+          } else {
+             setMessages(prev => [...prev, newMsg]);
+          }
+        })
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'room_state', filter: `room_id=eq.${roomId}` }, (payload: any) => {
+           const newState = payload.new;
+           setAiStatus(newState.ai_status || 'idle');
+           if (newState.focused_view) setViewMode(newState.focused_view as any);
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'room_members', filter: `room_id=eq.${roomId}` }, () => {
+           supabase.from('room_members').select('*').eq('room_id', roomId).then(({data}: any) => {
+              if (data) {
+                 setMembers(data);
+                 const me = data.find((m: any) => m.user_id === user.sub);
+                 if (me && me.role === 'owner') setIsOwner(true);
+              }
+           });
+        })
+        .subscribe();
+    }
+    initRoom();
+    return () => { if (channel) supabase.removeChannel(channel); }
+  }, [roomId, user?.sub]);
+
+  const handleGenerate = async () => {
+    if (!prompt.trim() || aiStatus !== 'idle') return;
+
     const currentPrompt = prompt;
     setPrompt("");
-    setIsGenerating(true);
 
+    await supabase.from('messages').insert({
+        room_id: roomId,
+        sender_id: user?.sub,
+        content: currentPrompt,
+        is_ai: false
+    });
+
+    if (currentPrompt.includes('@Adealy')) {
+        fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ room_id: roomId, prompt: currentPrompt, auth0_id: user?.sub })
+        }).catch(console.error);
+    }
+  };
+
+  const handleInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteEmail.trim() || !roomId || !user?.sub) return;
+    setIsInviting(true);
+    setInviteMessage(null);
     try {
-      const stream = streamTripGenerator(currentPrompt, sessionId);
-
-      for await (const chunk of stream) {
-        if (chunk.type === 'session_id') {
-          setSessionId(chunk.sessionId);
-        } else if (chunk.type === 'progress') {
-          setStreamStatus(`${chunk.message} (${chunk.step}/${chunk.totalSteps})`);
-        } else if (chunk.type === 'card_created') {
-          setCards(prev => [...prev, chunk.card]);
-        } else if (chunk.type === 'complete') {
-          if (chunk.trip) {
-            setTrip(chunk.trip);
-            setCards(chunk.trip.cards || []);
-          }
-          setMessages(prev => [...prev, { role: 'ai', content: chunk.message }]);
-          setIsGenerating(false);
-          setStreamStatus("");
-        }
+      const res = await fetch('/api/rooms/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room_id: roomId, email: inviteEmail.trim().toLowerCase(), auth0_id: user.sub }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setInviteMessage({ type: 'success', text: data.message });
+        setInviteEmail('');
+      } else {
+        setInviteMessage({ type: 'error', text: data.error });
       }
-    } catch (e) {
-      console.error(e);
-      setIsGenerating(false);
+    } catch (err) {
+      setInviteMessage({ type: 'error', text: 'Network error. Please try again.' });
+    } finally {
+      setIsInviting(false);
     }
   };
 
@@ -103,6 +239,20 @@ export default function PlannerPage() {
   // Derived state
   const displayedCards = selectedDay === 0 ? cards : cards.filter(c => c.day === selectedDay);
   const budgetProgress = trip && trip.summary ? (trip.summary.budgetUsed / trip.summary.estimatedBudget) * 100 : 0;
+
+  // Access Denied Screen
+  if (accessDenied) {
+    return (
+      <div className="h-screen w-screen bg-background text-foreground flex items-center justify-center flex-col gap-4">
+        <Lock className="h-12 w-12 text-muted-foreground" />
+        <h1 className="text-2xl font-bold">Access Denied</h1>
+        <p className="text-muted-foreground text-sm text-center max-w-xs">You have not been invited to this room. Ask the room owner to invite you by email.</p>
+        <Button onClick={() => setLocation('/planner')} size="sm" className="mt-2">Go to My Planner</Button>
+      </div>
+    );
+  }
+
+
 
   return (
     <div className="h-screen w-screen bg-background text-foreground flex overflow-hidden font-sans">
@@ -173,10 +323,18 @@ export default function PlannerPage() {
         {/* User Profile */}
         <div className="p-4 border-t border-sidebar-border">
           <div className="flex items-center gap-3 cursor-pointer group hover:bg-sidebar-accent/10 p-2 rounded-lg transition-colors" onClick={() => setLocation("/profile")}>
-            <div className="h-8 w-8 rounded-full bg-gradient-to-tr from-purple-500 to-blue-500 border border-sidebar-border" />
+            {user?.picture ? (
+                <img src={user.picture} alt="Profile" className="h-8 w-8 rounded-full border border-sidebar-border" />
+            ) : (
+                <div className="h-8 w-8 rounded-full bg-gradient-to-tr from-purple-500 to-blue-500 border border-sidebar-border" />
+            )}
             <div className="flex-1 overflow-hidden">
-              <p className="text-sm font-medium truncate group-hover:text-primary transition-colors">John Doe</p>
-              <p className="text-xs text-muted-foreground truncate">Pro Plan</p>
+              <p className="text-sm font-medium truncate group-hover:text-primary transition-colors">
+                  {profileData?.first_name ? `${profileData.first_name} ${profileData.last_name || ''}` : user?.name || "Guest"}
+              </p>
+              <p className="text-xs text-muted-foreground truncate">
+                  {profileData?.passport_country ? `${profileData.passport_country} Passport` : "Complete Profile"}
+              </p>
             </div>
             <Settings className="h-4 w-4 text-muted-foreground group-hover:text-foreground transition-colors" />
           </div>
@@ -191,21 +349,27 @@ export default function PlannerPage() {
           {/* Trip Title & Status */}
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
-              <h1 className="font-bold text-sm tracking-wide">{trip?.title || "New Trip"}</h1>
-              <Badge variant="secondary" className="bg-muted text-muted-foreground border-0 text-[10px] px-1.5 h-5">DRAFT</Badge>
+              <h1 className="font-bold text-sm tracking-wide">{trip?.title || roomName}</h1>
+              <Badge variant="secondary" className="bg-muted text-muted-foreground border-0 text-[10px] px-1.5 h-5">LIVE</Badge>
             </div>
           </div>
 
           {/* Center Toggles */}
           <div className="absolute left-1/2 -translate-x-1/2 flex items-center bg-muted p-1 rounded-lg border border-border/50">
             <button
-              onClick={() => setViewMode('map')}
+              onClick={() => {
+                 setViewMode('map');
+                 if (roomId) supabase.from('room_state').update({ focused_view: 'map' }).eq('room_id', roomId).then();
+              }}
               className={cn("px-3 py-1 rounded-md text-xs font-medium transition-all flex items-center gap-2", viewMode === 'map' ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}
             >
               <MapIcon className="h-3 w-3" /> Map
             </button>
             <button
-              onClick={() => setViewMode('timeline')}
+              onClick={() => {
+                 setViewMode('timeline');
+                 if (roomId) supabase.from('room_state').update({ focused_view: 'timeline' }).eq('room_id', roomId).then();
+              }}
               className={cn("px-3 py-1 rounded-md text-xs font-medium transition-all flex items-center gap-2", viewMode === 'timeline' ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}
             >
               <Calendar className="h-3 w-3" /> Timeline
@@ -300,11 +464,18 @@ export default function PlannerPage() {
               ))}
 
               {/* Floating Progress Status */}
-              {isGenerating && (
+              {aiStatus === 'thinking' && (
                 <div className="absolute top-8 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-4">
                   <div className="bg-blue-600 text-white px-4 py-2 rounded-full shadow-2xl flex items-center gap-3 backdrop-blur-md border border-white/20">
                     <Zap className="h-4 w-4 animate-pulse fill-current" />
-                    <span className="text-xs font-bold uppercase tracking-wide">{streamStatus || "Thinking..."}</span>
+                    <span className="text-xs font-bold uppercase tracking-wide">Adealy is designing your trip...</span>
+                  </div>
+                </div>
+              )}
+              {aiStatus === 'cooldown' && (
+                <div className="absolute top-8 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-4">
+                  <div className="bg-orange-600 text-white px-4 py-2 rounded-full shadow-2xl flex items-center gap-3 backdrop-blur-md border border-white/20">
+                    <span className="text-xs font-bold uppercase tracking-wide">Cooling down...</span>
                   </div>
                 </div>
               )}
@@ -380,7 +551,7 @@ export default function PlannerPage() {
                             No activities planned yet. Use the chat to add some magic!
                           </div>
                         ) : (
-                          dayCards.map((card, index) => (
+                          dayCards.map((card) => (
                             <motion.div
                               key={card.id}
                               whileHover={{ y: -4, scale: 1.01 }}
@@ -497,6 +668,85 @@ export default function PlannerPage() {
                 </>
               )}
             </div>
+          ) : activeTab === 'config' ? (
+            <div className="flex-1 overflow-y-auto p-4 space-y-5">
+              <div>
+                <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Room</h3>
+                <p className="text-sm font-semibold">{roomName}</p>
+                <p className="text-[10px] text-muted-foreground break-all mt-0.5">{roomId}</p>
+              </div>
+
+              {/* Invite by Email (Owner only) */}
+              {isOwner && (
+                <div className="border border-border/50 rounded-xl p-4 space-y-3 bg-card">
+                  <div className="flex items-center gap-2 mb-1">
+                    <UserPlus className="h-4 w-4 text-primary" />
+                    <h4 className="text-sm font-bold">Invite a Collaborator</h4>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">They must have an Adealy account first.</p>
+                  <form onSubmit={handleInvite} className="flex gap-2">
+                    <div className="relative flex-1">
+                      <Mail className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                      <input
+                        type="email"
+                        value={inviteEmail}
+                        onChange={(e) => setInviteEmail(e.target.value)}
+                        placeholder="friend@email.com"
+                        className="w-full pl-8 pr-3 py-2 text-xs bg-muted border border-border/50 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary/50 text-foreground placeholder:text-muted-foreground"
+                        required
+                      />
+                    </div>
+                    <Button type="submit" size="sm" disabled={isInviting} className="h-8 shrink-0 text-xs px-3">
+                      {isInviting ? '...' : 'Invite'}
+                    </Button>
+                  </form>
+                  {inviteMessage && (
+                    <div className={cn(
+                      "text-[11px] px-3 py-2 rounded-lg",
+                      inviteMessage.type === 'success'
+                        ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                        : "bg-red-500/10 text-red-400 border border-red-500/20"
+                    )}>
+                      {inviteMessage.text}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Members List */}
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <Users className="h-4 w-4 text-muted-foreground" />
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Members ({members.length})</h4>
+                </div>
+                <div className="space-y-2">
+                  {members.map(m => (
+                    <div key={m.id} className="p-3 bg-card border border-border/50 rounded-lg flex flex-col gap-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold">
+                          {m.user_id === user?.sub ? 'You' : 'Member'}
+                          {m.role === 'owner' && <span className="ml-1.5 text-[9px] uppercase text-primary font-bold bg-primary/10 px-1.5 py-0.5 rounded-full">Owner</span>}
+                        </span>
+                        {isOwner && m.user_id !== user?.sub && (
+                          <Button size="sm" variant="destructive" className="h-5 text-[9px] px-2" onClick={() => {
+                            supabase.from('room_members').delete().eq('id', m.id).then();
+                          }}>Remove</Button>
+                        )}
+                      </div>
+                      {isOwner && m.user_id !== user?.sub && (
+                        <label className="text-[11px] flex items-center gap-2 cursor-pointer mt-1 text-muted-foreground">
+                          <input type="checkbox" checked={m.can_prompt_ai} onChange={(e) => {
+                            supabase.from('room_members').update({ can_prompt_ai: e.target.checked }).eq('id', m.id).then();
+                          }} className="rounded border-border accent-primary" />
+                          Allow @Adealy prompts
+                        </label>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
           ) : (
             /* Chat Interface */
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -508,10 +758,10 @@ export default function PlannerPage() {
                 </div>
               ) : (
                 messages.map((msg, i) => (
-                  <div key={i} className={cn("flex flex-col gap-2", msg.role === 'user' ? "items-end" : "items-start")}>
+                  <div key={i} className={cn("flex flex-col gap-2", !msg.is_ai ? "items-end" : "items-start")}>
                     <div className={cn(
-                      "max-w-[85%] text-sm p-3 rounded-2xl shadow-sm",
-                      msg.role === 'user' ? "bg-muted text-foreground rounded-tr-sm" : "bg-primary/10 text-primary rounded-tl-sm border border-primary/20"
+                      "max-w-[85%] text-sm p-3 rounded-2xl shadow-sm leading-relaxed",
+                      !msg.is_ai ? "bg-muted text-foreground rounded-tr-sm" : "bg-primary/10 text-primary rounded-tl-sm border border-primary/20"
                     )}>
                       {msg.content}
                     </div>
@@ -531,21 +781,22 @@ export default function PlannerPage() {
                 <textarea
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
+                  disabled={aiStatus !== "idle"}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
                       handleGenerate();
                     }
                   }}
-                  placeholder={activeTab === 'saved' ? "Use saved items to generate plan..." : "Ask Adealy to plan..."}
+                  placeholder={aiStatus === 'thinking' ? "Adealy is thinking..." : aiStatus === 'cooldown' ? "Cooling down..." : activeTab === 'saved' ? "Use saved items to generate plan..." : "Mention @Adealy to plan trip..."}
                   className="w-full bg-muted border border-border/10 rounded-xl p-3 pr-10 text-sm text-foreground placeholder:text-muted-foreground min-h-[50px] max-h-[120px] resize-none focus:outline-none focus:ring-1 focus:ring-primary/50"
                 />
                 <button
                   onClick={handleGenerate}
-                  disabled={!prompt.trim() || isGenerating}
+                  disabled={!prompt.trim() || aiStatus !== "idle"}
                   className="absolute right-2 bottom-3 p-1.5 bg-primary rounded-lg text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
-                  {isGenerating ? <Zap className="h-4 w-4 animate-pulse" /> : <Send className="h-4 w-4" />}
+                  {aiStatus !== "idle" ? <Zap className="h-4 w-4 animate-pulse" /> : <Send className="h-4 w-4" />}
                 </button>
               </div>
               {activeTab === 'saved' && cart.length > 0 && (
