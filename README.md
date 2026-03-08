@@ -1,6 +1,6 @@
 ## Starting the Stack
 
-From the root directory (`c:\Users\vs\Desktop\Adealy`), run:
+From the root directory, run:
 
 ```bash
 docker-compose up
