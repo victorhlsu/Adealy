@@ -688,7 +688,11 @@ export default function DashboardPage() {
                                                         startDate,
                                                         endDate,
                                                         days: Math.ceil((new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24)) || 1,
-                                                        summary: { estimatedBudget: totalBudget || 2500, budgetUsed: price },
+                                                        summary: {
+                                                            estimatedBudget: totalBudget || 2500,
+                                                            budgetUsed: price,
+                                                            travelers: travelers.adults + travelers.children
+                                                        },
                                                         cards: [flightCard]
                                                     };
 

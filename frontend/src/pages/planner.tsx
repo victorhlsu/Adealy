@@ -212,7 +212,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
       while (retryCount < maxRetries) {
         const { data, error } = await supabase
           .from('room_members')
-          .select('id, room_id, user_id, role, can_prompt_ai, has_paid, user_profiles(email, first_name, last_name)')
+          .select('id, room_id, user_id, role, can_prompt_ai, user_profiles(email, first_name, last_name)')
           .eq('room_id', roomId);
 
         if (error && error.code === 'PGRST204') {
@@ -236,13 +236,6 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
       // 3. Permission Consolidation and Payment State Initialization
       if (me) {
         setMembers(memData || []);
-
-        // Populate hasPaidLocal from backend state
-        if (memData) {
-          const paidMembers = memData.filter((m: any) => m.has_paid).map((m: any) => m.user_id);
-          setHasPaidLocal(Array.from(new Set(paidMembers)));
-        }
-
         if (me.role === 'owner' || isCreator) setIsOwner(true);
       } else if (isCreator) {
         // If I'm the creator but not in members, try one-time auto-join
@@ -262,12 +255,10 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
         // Final member refresh
         const { data: finalMems } = await supabase
           .from('room_members')
-          .select('id, room_id, user_id, role, can_prompt_ai, has_paid, user_profiles(email, first_name, last_name)')
+          .select('id, room_id, user_id, role, can_prompt_ai, user_profiles(email, first_name, last_name)')
           .eq('room_id', roomId);
         if (finalMems) {
           setMembers(finalMems);
-          const paidMembers = finalMems.filter((m: any) => m.has_paid).map((m: any) => m.user_id);
-          setHasPaidLocal(Array.from(new Set(paidMembers)));
         }
       } else {
         // Not creator and not a member
@@ -287,6 +278,12 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
               setTrip(tripData);
               setCards(tripData.cards || []);
             } catch (e) { }
+          } else if (msg.content.startsWith('__PAYMENT__:')) {
+            const uid = msg.content.split(':')[1];
+            setHasPaidLocal(prev => Array.from(new Set([...prev, uid])));
+          } else if (msg.content.startsWith('__REFUND__:')) {
+            const uid = msg.content.split(':')[1];
+            setHasPaidLocal(prev => prev.filter(id => id !== uid));
           } else {
             parsedMsgs.push(msg);
           }
@@ -316,6 +313,12 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
               setTrip(tripData);
               setCards(tripData.cards || []);
             } catch (e) { }
+          } else if (newMsg.content.startsWith('__PAYMENT__:')) {
+            const uid = newMsg.content.split(':')[1];
+            setHasPaidLocal(prev => Array.from(new Set([...prev, uid])));
+          } else if (newMsg.content.startsWith('__REFUND__:')) {
+            const uid = newMsg.content.split(':')[1];
+            setHasPaidLocal(prev => prev.filter(id => id !== uid));
           } else {
             setMessages(prev => [...prev, newMsg]);
           }
@@ -491,17 +494,6 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
     // Optimistic update
     setAiStatus('payment');
 
-    // Broadcast "payment" state to everyone
-    // Check if the trip has enough people. We can look at trip.summary.travelers or default to 1.
-    // If we don't know the exact intended size, we'll just check if there's at least 1 person, 
-    // but the user requested: "ensure that there are x people in the group before anyone can checkout."
-    // We will assume `trip.summary.travelers` was saved, otherwise we bypass.
-    const expectedTravelers = trip?.summary?.travelers || 1;
-    if (members.length < expectedTravelers) {
-      setPaymentError(`You need ${expectedTravelers} members in the group before you can checkout. Currently have ${members.length}. Invite them using the link!`);
-      return;
-    }
-
     const { error } = await supabase.from('room_state').update({
       ai_status: 'payment',
       last_prompted_by: user.sub
@@ -519,14 +511,15 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
     if (!roomId || !user?.sub) return;
     setPaymentError(null);
 
-    // 1. Persist payment to the room state array so it survives reloads.
-    const newPaidArray = Array.from(new Set([...hasPaidLocal, user.sub]));
-    setHasPaidLocal(newPaidArray);
+    // 1. Instant local update for snappy UI
+    setHasPaidLocal(prev => Array.from(new Set([...prev, user.sub])));
 
-    // 2. Broadcast to room state (we use a custom field `paid_members` or just rely on local broadcast if schema is strict,
-    // but we can piggyback on a system message, or just update `room_members.has_paid` if it exists. 
-    // Since we don't know if has_paid exists, we'll try to update it. If it fails, silent catch.)
-    await supabase.from('room_members').update({ has_paid: true }).eq('room_id', roomId).eq('user_id', user.sub).catch(() => { });
+    // 2. Persist to messages table to survive reloads cleanly
+    await supabase.from('messages').insert({
+      room_id: roomId,
+      content: `__PAYMENT__:${user.sub}`,
+      is_ai: true
+    });
 
     // 3. Keep AI locked in payment
     await supabase.from('room_state').update({
@@ -538,10 +531,13 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
     if (!roomId || !user?.sub) return;
     setPaymentError(null);
 
-    const newPaidArray = hasPaidLocal.filter(id => id !== user.sub);
-    setHasPaidLocal(newPaidArray);
+    setHasPaidLocal(prev => prev.filter(id => id !== user.sub));
 
-    await supabase.from('room_members').update({ has_paid: false }).eq('room_id', roomId).eq('user_id', user.sub).catch(() => { });
+    await supabase.from('messages').insert({
+      room_id: roomId,
+      content: `__REFUND__:${user.sub}`,
+      is_ai: true
+    });
 
     // For hackathon: just reset room entirely if someone refunds, unlocking it for everyone
     await supabase.from('room_state').update({
@@ -583,7 +579,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 
   const someOnePaid = hasPaidLocal.length > 0;
   const allPaid = members.length > 0 && hasPaidLocal.length === members.length;
-  const splitTotal = members.length > 0 ? Math.round(calculatedBudgetUsed / members.length) : calculatedBudgetUsed;
+  const splitTotal = members.length > 0 ? (calculatedBudgetUsed / members.length) : calculatedBudgetUsed;
   const myMember = members.find(m => m.user_id === user?.sub);
   const myMemberHasPaid = user?.sub ? hasPaidLocal.includes(user.sub) : false;
 
@@ -891,10 +887,10 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
           < div className="flex items-center gap-4" >
             {/* Budget Bar */}
             {/* Budget Bar */}
-            <div className="hidden lg:flex items-center gap-3 bg-muted px-3 py-1.5 rounded-full border border-border/10">
+            <div className="hidden xl:flex items-center gap-3 bg-muted px-3 py-1.5 rounded-full border border-border/10 shrink-0">
               <div className="text-xs font-medium">
-                <span className="text-foreground">${calculatedBudgetUsed}</span>
-                <span className="text-muted-foreground"> / ${estimatedBudget}</span>
+                <span className="text-foreground">${calculatedBudgetUsed.toFixed(2)}</span>
+                <span className="text-muted-foreground"> / ${estimatedBudget.toFixed(2)}</span>
               </div>
               <div className="w-20 h-1.5 bg-background rounded-full overflow-hidden">
                 <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${budgetProgress}% ` }} />
@@ -903,7 +899,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 
             <ModeToggle />
 
-            {isOwner && (aiStatus === 'idle' || aiStatus === 'payment') && (
+            {(aiStatus === 'idle' || aiStatus === 'payment') && (
               <Button
                 onClick={() => setShowCheckoutModal(true)}
                 size="sm"
@@ -1173,8 +1169,8 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                     </div>
                     <div className="w-px h-10 bg-border/50" />
                     <div className="flex flex-col items-center">
-                      <span className="text-2xl font-serif text-foreground">${estimatedBudget}</span>
-                      <span className="text-xs uppercase tracking-wider">Est. Cost</span>
+                      <span className="text-2xl font-serif text-foreground">${calculatedBudgetUsed.toFixed(2)}</span>
+                      <span className="text-xs uppercase tracking-wider">Total Cost</span>
                     </div>
                   </div>
                 </motion.div>
@@ -1262,7 +1258,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                                     <div className="flex items-center justify-between mb-2">
                                       <h3 className="font-serif text-xl font-bold group-hover:text-primary transition-colors">{card.name}</h3>
                                       <span className="text-sm font-bold bg-primary/10 text-primary px-2 py-1 rounded-md">
-                                        {card.data.price === 0 || !card.data.price ? "Free" : `$${card.data.price} `}
+                                        {card.data.price === 0 || !card.data.price ? "Free" : `$${Number(card.data.price).toFixed(2)}`}
                                       </span>
                                     </div>
                                     <div className="text-sm text-muted-foreground leading-relaxed line-clamp-2 md:line-clamp-none">{card.data.description}</div>
@@ -1411,11 +1407,11 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                 <div className="flex justify-between items-end px-1">
                   <div>
                     <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest mb-1">Total Budget</p>
-                    <p className="text-2xl font-black tracking-tighter">${calculatedBudgetUsed}</p>
+                    <p className="text-2xl font-black tracking-tighter">${calculatedBudgetUsed.toFixed(2)}</p>
                   </div>
                   <div className="text-right">
                     <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest mb-1">Per Person</p>
-                    <p className="text-lg font-black text-primary tracking-tighter">${splitTotal}</p>
+                    <p className="text-lg font-black text-primary tracking-tighter">${splitTotal.toFixed(2)}</p>
                   </div>
                 </div>
 
@@ -1441,7 +1437,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                             <p className="text-[10px] text-muted-foreground capitalize">{item.type}</p>
                           </div>
                         </div>
-                        <span className="text-xs font-bold text-foreground">${item.data.price || 0}</span>
+                        <span className="text-xs font-bold text-foreground">${Number(item.data.price || 0).toFixed(2)}</span>
                       </div>
                     ))
                   )}
@@ -1464,13 +1460,23 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                           </div>
                           <span className="text-xs font-bold">{m.user_id === user?.sub ? 'You' : (m.user_profiles?.first_name || 'Member')}</span>
                         </div>
-                        <Badge variant="outline" className="text-[9px] font-black uppercase h-5 text-muted-foreground/60">Pending</Badge>
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="text-[9px] font-black uppercase h-5 text-muted-foreground/60">Pending</Badge>
+                          {isOwner && m.user_id !== user?.sub && (
+                            <Button size="sm" variant="ghost" className="h-5 w-5 p-0 text-red-500 hover:text-red-600 hover:bg-red-500/10 shrink-0" onClick={(e) => {
+                              e.stopPropagation();
+                              supabase.from('room_members').delete().eq('id', m.id).then();
+                            }}>
+                              <span className="text-xs leading-none">&times;</span>
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
                 </div>
 
-                {isOwner && (aiStatus === 'idle' || aiStatus === 'payment') && cart.length > 0 && (
+                {(aiStatus === 'idle' || aiStatus === 'payment') && cart.length > 0 && (
                   <Button
                     onClick={() => setShowCheckoutModal(true)}
                     className="w-full h-12 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all active:scale-95 shadow-lg shadow-emerald-500/20"
@@ -1723,11 +1729,11 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                 <div className="flex justify-between items-end mb-4">
                   <div>
                     <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest mb-1">Total Trip Cost</p>
-                    <p className="text-2xl font-serif font-bold text-foreground">${calculatedBudgetUsed}</p>
+                    <p className="text-2xl font-serif font-bold text-foreground">${calculatedBudgetUsed.toFixed(2)}</p>
                   </div>
                   <div className="text-right">
-                    <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest mb-1">Per Person ({members.length}/{trip?.summary?.travelers || 1} Joined)</p>
-                    <p className="text-lg font-bold text-emerald-500">${splitTotal}</p>
+                    <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest mb-1">Per Person ({members.length})</p>
+                    <p className="text-lg font-bold text-emerald-500">${splitTotal.toFixed(2)}</p>
                   </div>
                 </div>
               </div>
@@ -1735,17 +1741,11 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
               {aiStatus === 'idle' ? (
                 <div className="space-y-4">
                   <div className="bg-amber-500/10 p-4 rounded-xl border border-amber-500/20 text-amber-500 text-xs leading-relaxed">
-                    <strong>Notice:</strong> This trip has {members.length} members. Starting checkout will lock the trip planning and require everyone to pay their share of ${splitTotal}.
+                    <strong>Notice:</strong> This trip has {members.length} members. Starting checkout will lock the trip planning and require everyone to pay their share of ${splitTotal.toFixed(2)}.
                   </div>
-                  {(isOwner || (members.length > 0 && members[0]?.user_id === user?.sub)) ? (
-                    <Button onClick={handleCheckout} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-6 rounded-xl font-bold text-base shadow-lg shadow-emerald-500/20">
-                      Start Shared Payment
-                    </Button>
-                  ) : (
-                    <div className="text-center p-4 border border-dashed border-border rounded-xl">
-                      <p className="text-sm text-muted-foreground">Waiting for the trip owner to start the checkout process.</p>
-                    </div>
-                  )}
+                  <Button onClick={handleCheckout} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-6 rounded-xl font-bold text-base shadow-lg shadow-emerald-500/20">
+                    Start Shared Payment
+                  </Button>
                 </div>
               ) : (
 
@@ -1769,13 +1769,23 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                                 <p className="text-[10px] text-muted-foreground">{profile?.email}</p>
                               </div>
                             </div>
-                            {hasPaidLocal.includes(m.user_id) ? (
-                              <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 text-[10px] font-bold uppercase gap-1">
-                                <Check className="h-3 w-3" /> Paid
-                              </Badge>
-                            ) : (
-                              <Badge variant="outline" className="text-[10px] font-bold uppercase bg-muted/50 text-muted-foreground">Pending</Badge>
-                            )}
+                            <div className="flex items-center gap-2">
+                              {hasPaidLocal.includes(m.user_id) ? (
+                                <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 text-[10px] font-bold uppercase gap-1">
+                                  <Check className="h-3 w-3" /> Paid
+                                </Badge>
+                              ) : (
+                                <Badge variant="outline" className="text-[10px] font-bold uppercase bg-muted/50 text-muted-foreground">Pending</Badge>
+                              )}
+                              {isOwner && m.user_id !== user?.sub && (
+                                <Button size="sm" variant="ghost" className="h-6 w-6 p-0 shrink-0 text-rose-500 hover:text-rose-600 hover:bg-rose-500/10 ml-1" onClick={(e) => {
+                                  e.stopPropagation();
+                                  supabase.from('room_members').delete().eq('id', m.id).then();
+                                }}>
+                                  <span className="text-lg leading-none">&times;</span>
+                                </Button>
+                              )}
+                            </div>
                           </div>
                         );
                       })}
@@ -1784,7 +1794,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 
                   {!myMemberHasPaid ? (
                     <Button onClick={handlePay} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-6 rounded-xl font-bold text-base shadow-lg shadow-emerald-500/20 gap-2">
-                      Pay My Share (${splitTotal})
+                      Pay My Share (${splitTotal.toFixed(2)})
                     </Button>
                   ) : (
                     <div className="bg-emerald-500/10 p-4 rounded-xl border border-emerald-500/20 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
