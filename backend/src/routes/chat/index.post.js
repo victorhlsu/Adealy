@@ -4,6 +4,24 @@ const dotenv = require('dotenv');
 const path = require('path');
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
+async function fetchOsrmRouteServer(coords, mode = 'driving') {
+    if (!coords || coords.length < 2) return null;
+    try {
+        const pathStr = coords.map(c => `${c[0]},${c[1]}`).join(';');
+        const profile = mode === 'walking' ? 'foot' : mode === 'bicycling' ? 'bicycle' : 'driving';
+        const url = `http://router.project-osrm.org/route/v1/${profile}/${pathStr}?overview=full&geometries=geojson`;
+        
+        // Dynamic import for node-fetch is not needed if we use global fetch (Node 18+)
+        const resp = await fetch(url);
+        if (!resp.ok) return null;
+        const json = await resp.json();
+        return json?.routes?.[0]?.geometry || null;
+    } catch (e) {
+        console.error("OSRM fetch failed on backend:", e);
+        return null;
+    }
+}
+
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const systemInstruction = `You are a travel planning assistant called Adealy. 
@@ -223,7 +241,23 @@ async function handler(req, res) {
             is_ai: true
         });
 
-        if (tripData) {
+        if (tripData && tripData.cards && Array.isArray(tripData.cards)) {
+            // Pre-fetch OSRM geometries for all transport cards so the frontend gets them instantly
+            console.log("Pre-fetching OSRM routes for transport cards...");
+            await Promise.all(tripData.cards.map(async (card) => {
+                if (card.type === 'transport' && card.data && card.data.from && card.data.to) {
+                    const coords = [
+                        [card.data.from.lng, card.data.from.lat],
+                        [card.data.to.lng, card.data.to.lat]
+                    ];
+                    const mode = card.data.mode || 'driving';
+                    const geometry = await fetchOsrmRouteServer(coords, mode);
+                    if (geometry) {
+                        card.data.routeGeometry = geometry; // Attach geometry directly to the card data
+                    }
+                }
+            }));
+
             // Send the raw trip data as a JSON string so frontend can parse and load the trip 
             // In a real app we'd save this to a trips table, but for now we'll put it in the chat
             await supabase.from('messages').insert({

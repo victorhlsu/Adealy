@@ -15,14 +15,14 @@ export default function LandingPage() {
   }
 
   return (
-    <div className="min-h-screen bg-white flex flex-col font-sans selection:bg-primary selection:text-white">
+    <div className="min-h-screen bg-background flex flex-col font-sans selection:bg-primary selection:text-white">
       {/* Header - Flat Bold */}
-      <header className="px-6 py-6 flex justify-between items-center border-b-4 border-gray-100 bg-white sticky top-0 z-50">
+      <header className="px-6 py-6 flex justify-between items-center border-b-4 border-border bg-background sticky top-0 z-50">
         <div className="flex items-center gap-3 group cursor-pointer" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
-          <div className="bg-white p-1 rounded-md border-2 border-gray-200 overflow-hidden w-12 h-12 flex items-center justify-center transition-transform duration-200 group-hover:scale-110">
+          <div className="bg-background p-1 rounded-md border-2 border-border overflow-hidden w-12 h-12 flex items-center justify-center transition-transform duration-200 group-hover:scale-110">
             <img src="/logo.png" alt="Adealy" className="w-full h-full object-cover" />
           </div>
-          <span className="text-2xl font-black tracking-tighter text-gray-900">
+          <span className="text-2xl font-black tracking-tighter text-foreground">
             Adealy
           </span>
         </div>
@@ -35,11 +35,11 @@ export default function LandingPage() {
             </Link>
           ) : (
             <div className="flex items-center gap-2">
-              <Button variant="ghost" className="font-bold hover:bg-gray-100 h-12 px-6" onClick={() => loginWithRedirect()}>
+              <Button variant="outline" className="font-black text-primary border-2 border-primary hover:bg-primary hover:text-white transition-colors h-12 px-6" onClick={() => loginWithRedirect()}>
                 Log In
               </Button>
               <Button
-                className="h-12 px-8 font-bold bg-primary text-white transition-all duration-200 hover:scale-105 active:scale-95"
+                className="h-12 px-8 font-black bg-primary text-white transition-all duration-200 hover:scale-105 active:scale-95 shadow-md"
                 onClick={() => loginWithRedirect({ authorizationParams: { screen_hint: 'signup' } })}
               >
                 Sign Up
@@ -89,8 +89,8 @@ export default function LandingPage() {
                     Start Your Journey Now
                   </Button>
                   <Button
-                    variant="ghost"
-                    className="h-16 px-10 text-xl font-black text-white hover:bg-white/10 rounded-md transition-all duration-200 hover:scale-110 active:scale-95 border-2 border-white/20"
+                    variant="outline"
+                    className="h-16 px-10 text-xl font-black text-white bg-white/10 hover:bg-white hover:text-primary rounded-md transition-all duration-200 hover:scale-110 active:scale-95 border-2 border-white/50"
                     onClick={() => loginWithRedirect()}
                   >
                     Log In
@@ -103,34 +103,34 @@ export default function LandingPage() {
         </section>
 
         {/* Features Section - Solid White with Color Block Cards */}
-        <section className="w-full py-24 md:py-32 px-6 bg-white flex flex-col items-center">
+        <section className="w-full py-24 md:py-32 px-6 bg-background flex flex-col items-center">
           <div className="max-w-6xl w-full grid md:grid-cols-3 gap-8">
-            <div className="flex flex-col items-start text-left space-y-4 p-10 rounded-lg bg-blue-50 transition-all duration-200 hover:scale-105 group cursor-pointer border-b-4 border-blue-100">
-              <div className="bg-white p-4 rounded-full border-2 border-primary text-primary transition-transform duration-200 group-hover:scale-110">
+            <div className="flex flex-col items-start text-left space-y-4 p-10 rounded-lg bg-card text-card-foreground transition-all duration-200 hover:scale-105 group cursor-pointer border-b-4 border-primary/20">
+              <div className="bg-background p-4 rounded-full border-2 border-primary text-primary transition-transform duration-200 group-hover:scale-110">
                 <Globe className="w-8 h-8" />
               </div>
-              <h3 className="font-black text-2xl tracking-tight text-gray-900">Smart Itineraries</h3>
-              <p className="text-gray-600 font-medium leading-relaxed">
+              <h3 className="font-black text-2xl tracking-tight text-foreground">Smart Itineraries</h3>
+              <p className="text-muted-foreground font-medium leading-relaxed">
                 Organize flights, hotels, and activities in a single, high-speed interface. No clutter, just travel.
               </p>
             </div>
 
-            <div className="flex flex-col items-start text-left space-y-4 p-10 rounded-lg bg-emerald-50 transition-all duration-200 hover:scale-105 group cursor-pointer border-b-4 border-emerald-100">
-              <div className="bg-white p-4 rounded-full border-2 border-secondary text-secondary transition-transform duration-200 group-hover:scale-110">
+            <div className="flex flex-col items-start text-left space-y-4 p-10 rounded-lg bg-card text-card-foreground transition-all duration-200 hover:scale-105 group cursor-pointer border-b-4 border-secondary/20">
+              <div className="bg-background p-4 rounded-full border-2 border-secondary text-secondary transition-transform duration-200 group-hover:scale-110">
                 <ShieldCheck className="w-8 h-8" />
               </div>
-              <h3 className="font-black text-2xl tracking-tight text-gray-900">Document Vault</h3>
-              <p className="text-gray-600 font-medium leading-relaxed">
+              <h3 className="font-black text-2xl tracking-tight text-foreground">Document Vault</h3>
+              <p className="text-muted-foreground font-medium leading-relaxed">
                 Securely store passport and visa details. Access them instantly, anywhere in the world.
               </p>
             </div>
 
-            <div className="flex flex-col items-start text-left space-y-4 p-10 rounded-lg bg-amber-50 transition-all duration-200 hover:scale-105 group cursor-pointer border-b-4 border-amber-100">
-              <div className="bg-white p-4 rounded-full border-2 border-amber-500 text-amber-500 transition-transform duration-200 group-hover:scale-110">
+            <div className="flex flex-col items-start text-left space-y-4 p-10 rounded-lg bg-card text-card-foreground transition-all duration-200 hover:scale-105 group cursor-pointer border-b-4 border-amber-500/20">
+              <div className="bg-background p-4 rounded-full border-2 border-amber-500 text-amber-500 transition-transform duration-200 group-hover:scale-110">
                 <Zap className="w-8 h-8" />
               </div>
-              <h3 className="font-black text-2xl tracking-tight text-gray-900">AI Optimization</h3>
-              <p className="text-gray-600 font-medium leading-relaxed">
+              <h3 className="font-black text-2xl tracking-tight text-foreground">AI Optimization</h3>
+              <p className="text-muted-foreground font-medium leading-relaxed">
                 Powered by Gemini. Get real-time routing, optimized for speed and budget automatically.
               </p>
             </div>

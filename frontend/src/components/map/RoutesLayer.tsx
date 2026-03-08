@@ -18,10 +18,12 @@ async function fetchOsrmRoute(coords: Array<[number, number]>, mode: string = 'd
     return geometry
 }
 
+// Global cache outside of component lifecycle to persist across remounts (e.g. toggling map/timeline views)
+const globalRouteCache: Record<string, any> = {}
+
 export function RoutesLayer({ cards, enabled, visibleDay, activeLayer }: { cards: TripCard[]; enabled: boolean; visibleDay?: number; activeLayer?: string }) {
     const { map, isLoaded } = useMap()
     const [geoms, setGeoms] = useState<Array<{ id: string; geometry: any }> | null>(null)
-    const cacheRef = useRef<Record<string, any>>({})
     const mountedRef = useRef(false)
 
     // Identify transport cards that need routing
@@ -34,14 +36,21 @@ export function RoutesLayer({ cards, enabled, visibleDay, activeLayer }: { cards
             c.data.from && c.data.to // Ensure we have start/end points
         );
 
-        return relevantCards.map(c => ({
-            id: c.id,
-            mode: c.data.mode || 'driving',
-            coords: [
-                [c.data.from!.lng, c.data.from!.lat],
-                [c.data.to!.lng, c.data.to!.lat]
-            ] as Array<[number, number]>
-        }));
+        return relevantCards.map(c => {
+            // If the backend pre-fetched the geometry, put it in the cache immediately
+            if (c.data.routeGeometry && !globalRouteCache[c.id]) {
+                globalRouteCache[c.id] = c.data.routeGeometry;
+            }
+
+            return {
+                id: c.id,
+                mode: c.data.mode || 'driving',
+                coords: [
+                    [c.data.from!.lng, c.data.from!.lat],
+                    [c.data.to!.lng, c.data.to!.lat]
+                ] as Array<[number, number]>
+            };
+        });
 
     }, [cards, enabled, visibleDay])
 
@@ -69,34 +78,49 @@ export function RoutesLayer({ cards, enabled, visibleDay, activeLayer }: { cards
             // For now, we simulate fetching real geometry via OSRM because the mock polyline is fake.
 
             const out: Array<{ id: string; geometry: any }> = []
+            let needsNetworkFetch = false;
 
-            await Promise.all(routesToFetch.map(async (r) => {
-                // Check cache first
-                if (cacheRef.current[r.id]) {
-                    out.push({ id: r.id, geometry: cacheRef.current[r.id] })
-                    return
+            // First pass: collect instantly available cached routes
+            for (const r of routesToFetch) {
+                if (globalRouteCache[r.id]) {
+                    out.push({ id: r.id, geometry: globalRouteCache[r.id] })
+                } else {
+                    needsNetworkFetch = true;
                 }
+            }
 
-                try {
-                    const geometry = await fetchOsrmRoute(r.coords, r.mode, abort.signal)
-                    if (geometry) {
-                        cacheRef.current[r.id] = geometry // Cache it
-                        out.push({ id: r.id, geometry })
-                    } else {
-                        // Fallback to straight line if OSRM fails
-                        const fallback = {
-                            type: 'LineString',
-                            coordinates: r.coords
-                        }
-                        out.push({ id: r.id, geometry: fallback })
-                    }
-                } catch (e) {
-                    console.error("Failed to fetch route", e)
-                }
-            }))
-
+            // Immediately render whatever is cached (or clear the map if nothing is cached)
+            // This prevents the old day's routes from sticking around while we fetch the new day's routes!
             if (!mountedRef.current || abort.signal.aborted) return
-            setGeoms(out)
+            setGeoms([...out])
+
+            // Second pass: fetch missing routes from OSRM
+            if (needsNetworkFetch) {
+                await Promise.all(routesToFetch.map(async (r) => {
+                    if (globalRouteCache[r.id]) return; // Already handled
+
+                    try {
+                        const geometry = await fetchOsrmRoute(r.coords, r.mode, abort.signal)
+                        if (geometry) {
+                            globalRouteCache[r.id] = geometry // Cache it globally
+                            out.push({ id: r.id, geometry })
+                        } else {
+                            // Fallback to straight line if OSRM fails
+                            const fallback = {
+                                type: 'LineString',
+                                coordinates: r.coords
+                            }
+                            out.push({ id: r.id, geometry: fallback })
+                        }
+                    } catch (e) {
+                        console.error("Failed to fetch route", e)
+                    }
+                }))
+
+                // Render again once network fetches complete
+                if (!mountedRef.current || abort.signal.aborted) return
+                setGeoms([...out])
+            }
         }
 
         run()

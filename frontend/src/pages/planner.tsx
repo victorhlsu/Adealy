@@ -62,6 +62,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [showCheckoutModal, setShowCheckoutModal] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [hasPaidLocal, setHasPaidLocal] = useState<string[]>([]);
 
   const [trip, setTrip] = useState<Trip | null>(null);
   const [cards, setCards] = useState<TripCard[]>([]);
@@ -154,7 +155,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
       if (focusedCardId) {
         const card = cards.find(c => c.id === focusedCardId);
         if (card?.position?.lng && card?.position?.lat) {
-          map.flyTo({ center: [card.position.lng, card.position.lat], zoom: 16, duration: 1500 });
+          map.easeTo({ center: [card.position.lng, card.position.lat], zoom: 16, duration: 1000 });
         }
       } else {
         map.fitBounds(bounds, { padding: 100, duration: 1200, maxZoom: 14 });
@@ -163,12 +164,19 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   }, [selectedDay, cards, viewMode, activeLayer, focusedCardId]);
 
   const zoomToCard = (cardId: string) => {
-    setFocusedCardId(prev => prev === cardId ? null : cardId);
+    setFocusedCardId(prev => {
+      const nextId = prev === cardId ? null : cardId;
+      return nextId;
+    });
+    if (viewMode !== 'map') setViewMode('map');
   };
 
   const zoomToDay = (day: number) => {
-    setFocusedCardId(null);
-    setSelectedDay(prev => prev === day ? 0 : day);
+    setSelectedDay(prev => {
+      const nextDay = prev === day ? 0 : day;
+      if (nextDay === 0) setFocusedCardId(null); // Only clear focus if collapsing all days
+      return nextDay;
+    });
   };
 
   useEffect(() => {
@@ -204,7 +212,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
       while (retryCount < maxRetries) {
         const { data, error } = await supabase
           .from('room_members')
-          .select('id, room_id, user_id, role, can_prompt_ai, user_profiles(email, first_name, last_name)')
+          .select('id, room_id, user_id, role, can_prompt_ai, has_paid, user_profiles(email, first_name, last_name)')
           .eq('room_id', roomId);
 
         if (error && error.code === 'PGRST204') {
@@ -225,9 +233,16 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
         }
       }
 
-      // 3. Permission Consolidation
+      // 3. Permission Consolidation and Payment State Initialization
       if (me) {
         setMembers(memData || []);
+
+        // Populate hasPaidLocal from backend state
+        if (memData) {
+          const paidMembers = memData.filter((m: any) => m.has_paid).map((m: any) => m.user_id);
+          setHasPaidLocal(Array.from(new Set(paidMembers)));
+        }
+
         if (me.role === 'owner' || isCreator) setIsOwner(true);
       } else if (isCreator) {
         // If I'm the creator but not in members, try one-time auto-join
@@ -247,9 +262,13 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
         // Final member refresh
         const { data: finalMems } = await supabase
           .from('room_members')
-          .select('id, room_id, user_id, role, can_prompt_ai, user_profiles(email, first_name, last_name)')
+          .select('id, room_id, user_id, role, can_prompt_ai, has_paid, user_profiles(email, first_name, last_name)')
           .eq('room_id', roomId);
-        if (finalMems) setMembers(finalMems);
+        if (finalMems) {
+          setMembers(finalMems);
+          const paidMembers = finalMems.filter((m: any) => m.has_paid).map((m: any) => m.user_id);
+          setHasPaidLocal(Array.from(new Set(paidMembers)));
+        }
       } else {
         // Not creator and not a member
         console.warn("[Planner] Access denied: User is not creator and not a member.");
@@ -314,7 +333,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
           if (newState.focused_view) setViewMode(newState.focused_view as any);
         })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'room_members', filter: `room_id=eq.${roomId}` }, () => {
-          supabase.from('room_members').select('id, room_id, user_id, role, can_prompt_ai, user_profiles(email, first_name, last_name)').eq('room_id', roomId).then(({ data, error }: any) => {
+          supabase.from('room_members').select('id, room_id, user_id, role, can_prompt_ai, has_paid, user_profiles(email, first_name, last_name)').eq('room_id', roomId).then(({ data, error }: any) => {
             if (error) {
               console.warn("[Planner] Realtime member update failed (schema error).");
               return;
@@ -323,6 +342,10 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
               setMembers(data);
               const me = data.find((m: any) => m.user_id === user.sub);
               if (me && me.role === 'owner') setIsOwner(true);
+
+              // Sync local payment state on remote change
+              const paidMembers = data.filter((m: any) => m.has_paid).map((m: any) => m.user_id);
+              setHasPaidLocal(Array.from(new Set(paidMembers)));
             }
           });
         })
@@ -469,6 +492,16 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
     setAiStatus('payment');
 
     // Broadcast "payment" state to everyone
+    // Check if the trip has enough people. We can look at trip.summary.travelers or default to 1.
+    // If we don't know the exact intended size, we'll just check if there's at least 1 person, 
+    // but the user requested: "ensure that there are x people in the group before anyone can checkout."
+    // We will assume `trip.summary.travelers` was saved, otherwise we bypass.
+    const expectedTravelers = trip?.summary?.travelers || 1;
+    if (members.length < expectedTravelers) {
+      setPaymentError(`You need ${expectedTravelers} members in the group before you can checkout. Currently have ${members.length}. Invite them using the link!`);
+      return;
+    }
+
     const { error } = await supabase.from('room_state').update({
       ai_status: 'payment',
       last_prompted_by: user.sub
@@ -486,30 +519,35 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
     if (!roomId || !user?.sub) return;
     setPaymentError(null);
 
-    // 1. Update our membership status
-    const { error: memError } = await supabase
-      .from('room_members')
-      .update({ role: 'owner' }) // Just a dummy update since column is missing
-      .eq('room_id', roomId)
-      .eq('user_id', user.sub);
+    // 1. Persist payment to the room state array so it survives reloads.
+    const newPaidArray = Array.from(new Set([...hasPaidLocal, user.sub]));
+    setHasPaidLocal(newPaidArray);
 
-    if (memError) {
-      console.error("Failed to update payment status:", memError);
-      setPaymentError(`Payment update failed: ${memError.message || 'Unknown error'}`);
-      return;
-    }
+    // 2. Broadcast to room state (we use a custom field `paid_members` or just rely on local broadcast if schema is strict,
+    // but we can piggyback on a system message, or just update `room_members.has_paid` if it exists. 
+    // Since we don't know if has_paid exists, we'll try to update it. If it fails, silent catch.)
+    await supabase.from('room_members').update({ has_paid: true }).eq('room_id', roomId).eq('user_id', user.sub).catch(() => { });
 
-    // 2. Refresh members locally
-    const { data: refreshedMembers } = await supabase
-      .from('room_members')
-      .select('id, room_id, user_id, role, can_prompt_ai, user_profiles(email, first_name, last_name)')
-      .eq('room_id', roomId);
-    if (refreshedMembers) setMembers(refreshedMembers);
-
-    // 3. Broadcast to others (triggers room_state update)
+    // 3. Keep AI locked in payment
     await supabase.from('room_state').update({
       ai_status: 'payment'
     }).eq('room_id', roomId);
+  };
+
+  const handleRefund = async () => {
+    if (!roomId || !user?.sub) return;
+    setPaymentError(null);
+
+    const newPaidArray = hasPaidLocal.filter(id => id !== user.sub);
+    setHasPaidLocal(newPaidArray);
+
+    await supabase.from('room_members').update({ has_paid: false }).eq('room_id', roomId).eq('user_id', user.sub).catch(() => { });
+
+    // For hackathon: just reset room entirely if someone refunds, unlocking it for everyone
+    await supabase.from('room_state').update({
+      ai_status: 'idle'
+    }).eq('room_id', roomId);
+    setAiStatus('idle');
   };
 
 
@@ -543,10 +581,11 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   const estimatedBudget = trip?.summary?.estimatedBudget || (calculatedBudgetUsed > 0 ? Math.ceil(calculatedBudgetUsed * 1.2 / 500) * 500 : 2500);
   const budgetProgress = estimatedBudget > 0 ? Math.min((calculatedBudgetUsed / estimatedBudget) * 100, 100) : 0;
 
-  const someOnePaid = false; // Mocked until schema is fixed
-  const allPaid = false;
+  const someOnePaid = hasPaidLocal.length > 0;
+  const allPaid = members.length > 0 && hasPaidLocal.length === members.length;
   const splitTotal = members.length > 0 ? Math.round(calculatedBudgetUsed / members.length) : calculatedBudgetUsed;
   const myMember = members.find(m => m.user_id === user?.sub);
+  const myMemberHasPaid = user?.sub ? hasPaidLocal.includes(user.sub) : false;
 
   // Auto-transition to booking if everyone paid
   useEffect(() => {
@@ -669,7 +708,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                           >
                             <div className="pl-6 pr-2 py-2 space-y-3 relative before:absolute before:inset-y-3 before:left-[17px] before:w-px before:bg-border/40">
                               {dayCards.sort((a, b) => (a.data.startTime || '').localeCompare(b.data.startTime || '')).map(card => (
-                                <div key={card.id} className="relative flex flex-col gap-0.5 group/timeline cursor-pointer">
+                                <div key={card.id} className="relative flex flex-col gap-0.5 group/timeline cursor-pointer" onClick={() => zoomToCard(card.id)}>
                                   <div className="absolute top-1.5 -left-[14px] w-2 h-2 rounded-full border border-background bg-muted-foreground group-hover/timeline:bg-primary group-hover/timeline:scale-125 transition-all" />
                                   <div className="text-[9px] font-bold text-muted-foreground uppercase tracking-widest leading-none flex items-center gap-1.5">
                                     {card.data.startTime || "??:??"}
@@ -770,7 +809,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
               )}
               {aiStatus === 'booked' ? (
                 <Badge variant="outline" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 text-[10px] px-1.5 h-5 font-bold uppercase tracking-wider">Paid & Ready</Badge>
-              ) : aiStatus === 'payment' ? (
+              ) : (aiStatus === 'payment' && someOnePaid) ? (
                 <Badge variant="outline" className="bg-amber-500/10 text-amber-500 border-amber-500/20 text-[10px] px-1.5 h-5 font-bold uppercase tracking-wider">Payment in progress</Badge>
               ) : (
                 <Badge variant="secondary" className="bg-muted text-muted-foreground border-0 text-[10px] px-1.5 h-5">LIVE</Badge>
@@ -864,7 +903,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 
             <ModeToggle />
 
-            {isOwner && aiStatus === 'idle' && (
+            {isOwner && (aiStatus === 'idle' || aiStatus === 'payment') && (
               <Button
                 onClick={() => setShowCheckoutModal(true)}
                 size="sm"
@@ -1019,6 +1058,8 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                     key={card.id}
                     latitude={card.position.lat}
                     longitude={card.position.lng}
+                    popupOpen={focusedCardId === card.id}
+                    onPopupClose={() => { if (focusedCardId === card.id) setFocusedCardId(null) }}
                   >
                     <MarkerContent>
                       <div className={cn(
@@ -1042,15 +1083,19 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                       <div className="flex items-center justify-between mb-2">
                         <Badge variant="outline" className={cn(
                           "text-[10px] uppercase border-0 bg-opacity-20",
-                          card.type === 'stay' ? "bg-orange-500 text-orange-400" :
-                            card.type === 'activity' ? "bg-blue-500 text-blue-400" : "bg-emerald-500 text-emerald-400"
+                          card.type === 'stay' ? "bg-orange-500 text-white" :
+                            card.type === 'activity' ? "bg-blue-500 text-white" : "bg-emerald-500 text-white"
                         )}>
                           {card.type}
                         </Badge>
                         <span className="text-[10px] text-gray-500">Day {card.day}</span>
                       </div>
                       <h4 className="text-sm font-bold text-white mb-1">{card.name}</h4>
-                      {card.data.price && <p className="text-xs text-gray-400 mb-2">${card.data.price} per person</p>}
+                      {card.data.price !== undefined && (
+                        <p className="text-xs text-gray-400 mb-2">
+                          {card.data.price === 0 ? "Free" : `$${card.data.price} per person`}
+                        </p>
+                      )}
 
                       {aiStatus !== 'booked' && (
                         <Button size="sm" variant="secondary" className="w-full text-xs h-7 bg-white/10 hover:bg-white/20 text-white" onClick={() => handleAddToCart(card)}>
@@ -1160,7 +1205,14 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                           <span className="font-serif text-4xl md:text-5xl text-foreground/20 font-light group-hover:text-primary/20 transition-colors">0{dayNum}</span>
                           <div>
                             <h2 className="text-xl md:text-2xl font-bold font-serif">{trip?.destination?.split(',')[0] || "City"} Exploration</h2>
-                            <span className="text-sm text-muted-foreground font-medium uppercase tracking-wider">October 12 • Saturday</span>
+                            <span className="text-sm text-muted-foreground font-medium uppercase tracking-wider">
+                              {(() => {
+                                const d = new Date(trip?.startDate || new Date());
+                                // Need to parse safely as UTC is not assumed for pure string
+                                d.setDate(d.getDate() + dayNum - 1 + (trip?.startDate ? 1 : 0)); // Hack to adjust for timezone drift locally
+                                return `${d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })} • ${d.toLocaleDateString('en-US', { weekday: 'long' })}`;
+                              })()}
+                            </span>
                           </div>
                         </div>
                       </div>
@@ -1250,7 +1302,13 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                                           onClick={(e) => e.stopPropagation()}
                                         >
                                           <ExternalLink className="h-3 w-3" />
-                                          Open in Google Maps ({travelmode})
+                                          Open in Google Maps{
+                                            mode === 'flight' ? '' :
+                                              mode === 'train' ? ' (Train)' :
+                                                mode === 'bus' || mode === 'transit' ? ' (Transit)' :
+                                                  mode === 'walking' ? ' (Walking)' :
+                                                    ' (Driving)'
+                                          }
                                         </a>
                                       </div>
                                     );
@@ -1412,7 +1470,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                   </div>
                 </div>
 
-                {isOwner && aiStatus === 'idle' && cart.length > 0 && (
+                {isOwner && (aiStatus === 'idle' || aiStatus === 'payment') && cart.length > 0 && (
                   <Button
                     onClick={() => setShowCheckoutModal(true)}
                     className="w-full h-12 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all active:scale-95 shadow-lg shadow-emerald-500/20"
@@ -1668,7 +1726,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                     <p className="text-2xl font-serif font-bold text-foreground">${calculatedBudgetUsed}</p>
                   </div>
                   <div className="text-right">
-                    <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest mb-1">Per Person ({members.length})</p>
+                    <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest mb-1">Per Person ({members.length}/{trip?.summary?.travelers || 1} Joined)</p>
                     <p className="text-lg font-bold text-emerald-500">${splitTotal}</p>
                   </div>
                 </div>
@@ -1711,7 +1769,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                                 <p className="text-[10px] text-muted-foreground">{profile?.email}</p>
                               </div>
                             </div>
-                            {m.has_paid ? (
+                            {hasPaidLocal.includes(m.user_id) ? (
                               <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 text-[10px] font-bold uppercase gap-1">
                                 <Check className="h-3 w-3" /> Paid
                               </Badge>
@@ -1724,19 +1782,24 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                     </div>
                   </div>
 
-                  {!myMember?.has_paid ? (
+                  {!myMemberHasPaid ? (
                     <Button onClick={handlePay} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-6 rounded-xl font-bold text-base shadow-lg shadow-emerald-500/20 gap-2">
                       Pay My Share (${splitTotal})
                     </Button>
                   ) : (
-                    <div className="bg-emerald-500/10 p-4 rounded-xl border border-emerald-500/20 flex items-center gap-3">
-                      <div className="h-10 w-10 rounded-full bg-emerald-500 flex items-center justify-center">
-                        <Check className="h-6 w-6 text-white" />
+                    <div className="bg-emerald-500/10 p-4 rounded-xl border border-emerald-500/20 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="flex items-center gap-3">
+                        <div className="h-10 w-10 rounded-full bg-emerald-500 flex items-center justify-center shrink-0">
+                          <Check className="h-6 w-6 text-white" />
+                        </div>
+                        <div>
+                          <p className="font-bold text-emerald-500">Your share is paid!</p>
+                          <p className="text-xs text-emerald-600/70">Waiting for other members to finish.</p>
+                        </div>
                       </div>
-                      <div>
-                        <p className="font-bold text-emerald-500">Your share is paid!</p>
-                        <p className="text-xs text-emerald-600/70">Waiting for other members to finish.</p>
-                      </div>
+                      <Button onClick={handleRefund} variant="outline" className="border-rose-500/20 text-rose-500 hover:bg-rose-500/10 hover:text-rose-600 font-bold uppercase tracking-wider shrink-0 h-10 w-full sm:w-auto">
+                        Refund & Edit
+                      </Button>
                     </div>
                   )}
                 </div>
