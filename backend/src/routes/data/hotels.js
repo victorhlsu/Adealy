@@ -359,62 +359,75 @@ function spawnPythonWorker(query) {
 
 			const python = spawn(pythonCmd, [workerPath]);
 
-		let stdout = '';
-		let stderr = '';
+			let stdout = '';
+			let stderr = '';
 
-		python.stdout.on('data', (data) => {
-			stdout += data.toString();
-		});
-
-		python.stderr.on('data', (data) => {
-			stderr += data.toString();
-		});
-
-		python.on('close', (code) => {
-			if (resolved) return;
-			if (code !== 0) {
-				console.error('[hotels-worker] Python error:', stderr);
-				resolved = true;
-				return resolve({
-					error: `Python worker exited with code ${code}: ${stderr}`,
-					hotels: [],
-					searchUrl: null,
-				});
-			}
-
-			try {
-				const result = JSON.parse(stdout);
-				resolved = true;
-				return resolve(result);
-			} catch (e) {
-				console.error('[hotels-worker] JSON parse error:', e, 'stdout:', stdout);
-				resolved = true;
-				return resolve({
-					error: 'Failed to parse worker output',
-					hotels: [],
-					searchUrl: null,
-				});
-			}
-		});
-
-		python.on('error', (err) => {
-			// If interpreter not found, try the next candidate.
-			if (err && err.code === 'ENOENT' && idx + 1 < pythonCandidates.length) {
-				return trySpawn(idx + 1);
-			}
-			console.error('[hotels-worker] Spawn error:', err);
-			if (resolved) return;
-			resolved = true;
-			return resolve({
-				error: `Failed to spawn worker: ${err.message}`,
-				hotels: [],
-				searchUrl: null,
+			python.stdout.on('data', (data) => {
+				stdout += data.toString();
 			});
-		});
 
-		// Send query to worker as JSON
-		python.stdin.write(JSON.stringify(query));
-		python.stdin.end();
+			python.stderr.on('data', (data) => {
+				stderr += data.toString();
+			});
+
+			python.on('close', (code) => {
+				if (resolved) return;
+				if (code !== 0) {
+					console.error('[hotels-worker] Python error:', stderr);
+					resolved = true;
+					return resolve({
+						error: `Python worker exited with code ${code}: ${stderr}`,
+						hotels: [],
+						searchUrl: null,
+					});
+				}
+
+				try {
+					const result = JSON.parse(stdout);
+					resolved = true;
+					return resolve(result);
+				} catch (e) {
+					console.error('[hotels-worker] JSON parse error:', e, 'stdout:', stdout);
+					resolved = true;
+					return resolve({
+						error: 'Failed to parse worker output',
+						hotels: [],
+						searchUrl: null,
+					});
+				}
+			});
+
+			python.on('error', (err) => {
+				// If interpreter not found, try the next candidate.
+				if (err && err.code === 'ENOENT' && idx + 1 < pythonCandidates.length) {
+					return trySpawn(idx + 1);
+				}
+				console.error('[hotels-worker] Spawn error:', err);
+				if (resolved) return;
+				resolved = true;
+				return resolve({
+					error: `Failed to spawn worker: ${err.message}`,
+					hotels: [],
+					searchUrl: null,
+				});
+			});
+
+			// Enforce a hard timeout since Dockerized Playwright can hang forever
+			const timer = setTimeout(() => {
+				if (resolved) return;
+				console.error('[hotels-worker] Node wrapper hard timeout reached (190s). Killing child process.');
+				python.kill('SIGKILL');
+				resolved = true;
+				return resolve({
+					error: 'Python worker timed out after 190s',
+					hotels: [],
+					searchUrl: null,
+				});
+			}, 190000);
+
+			// Send query to worker as JSON
+			python.stdin.write(JSON.stringify(query));
+			python.stdin.end();
 		};
 
 		trySpawn(0);

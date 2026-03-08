@@ -474,18 +474,18 @@ export default function DashboardPage() {
                                                 />
                                             </div>
                                             {fromAirports.length > 0 && fromAirport.length >= 2 && (
-                                                <div className="absolute top-full left-0 w-full mt-1 bg-white border-2 border-gray-900 rounded-lg shadow-xl z-50 max-h-[150px] overflow-y-auto">
+                                                <div className="absolute top-full left-0 w-full mt-1 bg-card border-2 border-border rounded-lg shadow-xl z-50 max-h-[150px] overflow-y-auto">
                                                     {fromAirports.map(a => (
                                                         <button
                                                             key={a.code}
                                                             onClick={() => { setFromAirport(a.code); setFromAirportMeta(a); setFromAirports([]); }}
-                                                            className="w-full px-4 py-3 text-left hover:bg-gray-100 border-b border-gray-100 last:border-none group"
+                                                            className="w-full px-4 py-3 text-left hover:bg-muted border-b border-border last:border-none group"
                                                         >
                                                             <div className="flex items-center justify-between">
                                                                 <span className="font-black text-sm text-primary">{a.code}</span>
-                                                                <span className="text-[10px] font-bold text-gray-400 uppercase">{a.city}, {a.countryCode}</span>
+                                                                <span className="text-[10px] font-bold text-muted-foreground uppercase">{a.city}, {a.countryCode}</span>
                                                             </div>
-                                                            <p className="text-[10px] font-medium text-gray-500 truncate">{a.name}</p>
+                                                            <p className="text-[10px] font-medium text-muted-foreground truncate">{a.name}</p>
                                                         </button>
                                                     ))}
                                                 </div>
@@ -592,7 +592,7 @@ export default function DashboardPage() {
                                                     setFlightResultsSource(null);
                                                     setLandingAirport("");
                                                     setLandingAirports([]);
-												setLandingAirportMeta(null);
+                                                    setLandingAirportMeta(null);
                                                 }
                                             }}
                                             className="rounded border-border accent-primary"
@@ -610,7 +610,7 @@ export default function DashboardPage() {
                                                     onChange={async (e) => {
                                                         const val = e.target.value;
                                                         setLandingAirport(val);
-												setLandingAirportMeta(null);
+                                                        setLandingAirportMeta(null);
                                                         if (val.length >= 2) {
                                                             try {
                                                                 const res = await fetch('/api/data/airports', {
@@ -800,13 +800,13 @@ export default function DashboardPage() {
                                                     endDate: resolvedEndDate,
                                                     days: tripDays,
                                                     arrivalAirport: skipFlight ? landingAirport : toAirport,
-											center: (() => {
-												const a = skipFlight ? landingAirportMeta : toAirportMeta;
-												const lat = Number(a?.latitude);
-												const lng = Number(a?.longitude);
-												if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
-												return null;
-											})(),
+                                                    center: (() => {
+                                                        const a = skipFlight ? landingAirportMeta : toAirportMeta;
+                                                        const lat = Number(a?.latitude);
+                                                        const lng = Number(a?.longitude);
+                                                        if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+                                                        return null;
+                                                    })(),
                                                     summary: {
                                                         estimatedBudget: totalBudget || 2500,
                                                         budgetUsed,

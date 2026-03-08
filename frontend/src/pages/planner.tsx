@@ -412,33 +412,6 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 
     setViewMode('map');
     if (roomId) supabase.from('room_state').update({ focused_view: 'map' }).eq('room_id', roomId).then();
-
-    // Auto-run search when we have enough trip context.
-    if (location && checkin && checkout && !hotelsLoading) {
-      const travelers = Number((trip as any)?.summary?.travelers) || 2;
-      const adults = Math.max(1, travelers);
-
-      setHotelsLoading(true);
-      searchHotels({
-        location,
-        checkin,
-        checkout,
-        adults,
-        children: 0,
-        rooms: 1,
-        currency: hotelsQuery.currency || 'USD',
-      })
-        .then(res => {
-          setHotels(res.hotels || []);
-          setHotelsSearchUrl(res.searchUrl || null);
-        })
-        .catch((e: any) => {
-          setHotelsError(e?.message || 'Failed to search hotels');
-        })
-        .finally(() => {
-          setHotelsLoading(false);
-        });
-    }
   };
 
   const runHotelsSearch = async () => {
@@ -1460,10 +1433,10 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                                       {card.type === 'stay' ? <BedDouble className="h-3 w-3" /> :
                                         card.type === 'activity' ? <Camera className="h-3 w-3" /> :
                                           card.data.mode === 'flight' ? <Plane className="h-3 w-3" /> :
-                                          card.data.mode === 'walking' ? <Footprints className="h-3 w-3" /> :
-                                            card.data.mode === 'driving' ? <Car className="h-3 w-3" /> :
-                                              card.data.mode === 'bicycling' ? <Bike className="h-3 w-3" /> :
-                                                <Train className="h-3 w-3" />
+                                            card.data.mode === 'walking' ? <Footprints className="h-3 w-3" /> :
+                                              card.data.mode === 'driving' ? <Car className="h-3 w-3" /> :
+                                                card.data.mode === 'bicycling' ? <Bike className="h-3 w-3" /> :
+                                                  <Train className="h-3 w-3" />
                                       }
                                     </div>
                                     <div className="flex-1 min-w-0">
