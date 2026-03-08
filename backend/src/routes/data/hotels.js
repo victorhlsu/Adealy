@@ -43,7 +43,7 @@
  *
  * Notes:
  * - "address" may be missing depending on the upstream scraper.
- * - "latitude"/"longitude" are best-effort: if GEMINI_API_KEY is configured, the backend attempts to enrich missing coordinates.
+ * - "latitude"/"longitude" are best-effort: the backend geocodes missing coordinates via OpenStreetMap Nominatim (Gemini coords are opt-in).
  */
 
 const { Router } = require('express');
@@ -54,13 +54,133 @@ const ai = require('../../ai/ai');
 
 const sanitizeForGemini = (value) => String(value || '').replace(/[\r\n\t]+/g, ' ').trim();
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const isValidLatLng = (lat, lng) => {
+	if (typeof lat !== 'number' || typeof lng !== 'number') return false;
+	if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+	return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+};
+
+async function fetchJson(url, options = {}) {
+	// Node 18+ has global fetch. Provide a minimal fallback for older runtimes.
+	if (typeof fetch === 'function') {
+		const resp = await fetch(url, options);
+		return resp;
+	}
+
+	// eslint-disable-next-line global-require
+	const https = require('https');
+	return new Promise((resolve, reject) => {
+		const req = https.request(url, { method: options.method || 'GET', headers: options.headers || {} }, (res) => {
+			let body = '';
+			res.on('data', (chunk) => { body += chunk.toString('utf8'); });
+			res.on('end', () => {
+				resolve({
+					ok: res.statusCode >= 200 && res.statusCode < 300,
+					status: res.statusCode,
+					json: async () => JSON.parse(body),
+					text: async () => body,
+				});
+			});
+		});
+		req.on('error', reject);
+		req.end();
+	});
+}
+
+async function geocodeWithNominatim(query) {
+	try {
+		const q = String(query || '').trim();
+		if (!q) return null;
+		const params = new URLSearchParams({
+			format: 'jsonv2',
+			limit: '1',
+			q,
+		});
+		if (process.env.NOMINATIM_EMAIL) params.set('email', String(process.env.NOMINATIM_EMAIL));
+
+		const url = `https://nominatim.openstreetmap.org/search?${params.toString()}`;
+		const resp = await fetchJson(url, {
+			headers: {
+				// Nominatim requires a valid identifying UA.
+				'User-Agent': process.env.NOMINATIM_USER_AGENT || 'AdealyHackCanada/0.1',
+				'Accept': 'application/json',
+			},
+		});
+		if (!resp.ok) return null;
+		const data = await resp.json();
+		if (!Array.isArray(data) || data.length === 0) return null;
+		const first = data[0];
+		const lat = Number.parseFloat(first?.lat);
+		const lng = Number.parseFloat(first?.lon);
+		if (!isValidLatLng(lat, lng)) return null;
+		return { latitude: lat, longitude: lng, address: first?.display_name };
+	} catch (e) {
+		return null;
+	}
+}
+
+async function enrichHotelsWithNominatimCoordinates({ location, hotels }) {
+	try {
+		if (process.env.DISABLE_NOMINATIM === '1') return hotels;
+		if (!Array.isArray(hotels) || hotels.length === 0) return hotels;
+
+		const missing = hotels
+			.map((h, idx) => ({ h, idx }))
+			.filter(({ h }) => h && !isValidLatLng(h.latitude, h.longitude));
+		if (missing.length === 0) return hotels;
+
+		// Be polite to Nominatim. Keep requests low and sequential.
+		const maxToGeocode = Math.min(missing.length, Number(process.env.NOMINATIM_MAX_GEOCODES || 20));
+		for (let i = 0; i < maxToGeocode; i++) {
+			const { h, idx } = missing[i];
+			const name = sanitizeForGemini(h?.name);
+			const address = sanitizeForGemini(h?.address);
+			const q = address ? `${name}, ${address}` : `${name}, ${sanitizeForGemini(location)}`;
+
+			// 1 req/sec guideline
+			if (i > 0) await sleep(1100);
+
+			const geo = await geocodeWithNominatim(q);
+			if (!geo) continue;
+			hotels[idx].latitude = geo.latitude;
+			hotels[idx].longitude = geo.longitude;
+			if ((!hotels[idx].address || !String(hotels[idx].address).trim()) && geo.address) {
+				hotels[idx].address = geo.address;
+			}
+		}
+
+		return hotels;
+	} catch (err) {
+		console.error('[hotels] Failed to enrich hotels with Nominatim coordinates:', err);
+		return hotels;
+	}
+}
+
 async function enrichHotelsWithGeminiCoordinates({ location, hotels }) {
 	try {
 		if (!Array.isArray(hotels) || hotels.length === 0) return hotels;
+		// Coordinates should come from a real geocoder by default.
+		// Allow Gemini coords only when explicitly enabled.
+		if (process.env.ENABLE_GEMINI_COORDS !== '1') return hotels;
 		if (!process.env.GEMINI_API_KEY) return hotels;
+		if (process.env.DISABLE_GEMINI_COORDS === '1') return hotels;
 
-		const needsCoords = hotels.some((h) => h && (h.latitude == null || h.longitude == null));
-		if (!needsCoords) return hotels;
+		const needsCoords = hotels.some((h) => h && (typeof h.latitude !== 'number' || typeof h.longitude !== 'number'));
+		// Clear invalid coordinate-shaped values so downstream enrichment can replace them.
+		for (const h of hotels) {
+			if (!h || typeof h !== 'object') continue;
+			if (h.latitude != null || h.longitude != null) {
+				if (!isValidLatLng(h.latitude, h.longitude)) {
+					h.latitude = null;
+					h.longitude = null;
+				}
+			}
+		}
+
+		const needsCoordsAfterClear = hotels.some((h) => h && !isValidLatLng(h.latitude, h.longitude));
+		if (!needsCoordsAfterClear) return hotels;
 
 		const payload = hotels.map((h, index) => ({
 			index,
@@ -140,10 +260,23 @@ const searchHotels = async (req, res) => {
 		// Check cache first
 		const cached = await getCachedHotels(location, checkin, checkout, adults, children, rooms, currency);
 		if (cached) {
+			let hotels = cached.hotels;
+			const missingCount = Array.isArray(hotels)
+				? hotels.filter((h) => h && !isValidLatLng(h.latitude, h.longitude)).length
+				: 0;
+			const needsCoords = missingCount > 0;
+
+			if (needsCoords) {
+				hotels = await enrichHotelsWithNominatimCoordinates({ location, hotels });
+				hotels = await enrichHotelsWithGeminiCoordinates({ location, hotels });
+				// Refresh cache with enriched coordinates so future calls don't need geocoding.
+				await cacheHotels(location, checkin, checkout, adults, children, rooms, currency, hotels, cached.searchUrl);
+			}
+
 			return res.json({
 				request: { location, checkin, checkout, adults, children, rooms, currency },
-				hotels: cached.hotels,
-				count: cached.hotels.length,
+				hotels,
+				count: (hotels && hotels.length) || 0,
 				cached: true,
 				searchUrl: cached.searchUrl,
 			});
@@ -164,7 +297,10 @@ const searchHotels = async (req, res) => {
 		}
 
 		if (result.hotels && result.hotels.length > 0) {
-			// Enrich lat/lng (+ address if missing) via Gemini in one batch
+			// Fill missing/out-of-range coordinates via Nominatim (accurate geocoding)
+			result.hotels = await enrichHotelsWithNominatimCoordinates({ location, hotels: result.hotels });
+
+			// Optional: allow Gemini to fill any remaining gaps (opt-in)
 			result.hotels = await enrichHotelsWithGeminiCoordinates({ location, hotels: result.hotels });
 
 			// Remove ratingCount if any scraper provided it
@@ -204,7 +340,24 @@ const searchHotels = async (req, res) => {
 function spawnPythonWorker(query) {
 	return new Promise((resolve) => {
 		const workerPath = path.join(__dirname, '../../hotels_worker_google.py');
-		const python = spawn('python', [workerPath]);
+
+		const pythonCandidates = process.env.PYTHON_BIN
+			? [process.env.PYTHON_BIN]
+			: (process.platform === 'win32' ? ['python', 'python3'] : ['python3', 'python']);
+
+		let resolved = false;
+		const trySpawn = (idx) => {
+			const pythonCmd = pythonCandidates[idx];
+			if (!pythonCmd) {
+				resolved = true;
+				return resolve({
+					error: 'Failed to spawn worker: no python interpreter found (tried ' + pythonCandidates.join(', ') + ')',
+					hotels: [],
+					searchUrl: null,
+				});
+			}
+
+			const python = spawn(pythonCmd, [workerPath]);
 
 		let stdout = '';
 		let stderr = '';
@@ -218,8 +371,10 @@ function spawnPythonWorker(query) {
 		});
 
 		python.on('close', (code) => {
+			if (resolved) return;
 			if (code !== 0) {
 				console.error('[hotels-worker] Python error:', stderr);
+				resolved = true;
 				return resolve({
 					error: `Python worker exited with code ${code}: ${stderr}`,
 					hotels: [],
@@ -229,9 +384,11 @@ function spawnPythonWorker(query) {
 
 			try {
 				const result = JSON.parse(stdout);
+				resolved = true;
 				return resolve(result);
 			} catch (e) {
 				console.error('[hotels-worker] JSON parse error:', e, 'stdout:', stdout);
+				resolved = true;
 				return resolve({
 					error: 'Failed to parse worker output',
 					hotels: [],
@@ -241,7 +398,13 @@ function spawnPythonWorker(query) {
 		});
 
 		python.on('error', (err) => {
+			// If interpreter not found, try the next candidate.
+			if (err && err.code === 'ENOENT' && idx + 1 < pythonCandidates.length) {
+				return trySpawn(idx + 1);
+			}
 			console.error('[hotels-worker] Spawn error:', err);
+			if (resolved) return;
+			resolved = true;
 			return resolve({
 				error: `Failed to spawn worker: ${err.message}`,
 				hotels: [],
@@ -252,6 +415,9 @@ function spawnPythonWorker(query) {
 		// Send query to worker as JSON
 		python.stdin.write(JSON.stringify(query));
 		python.stdin.end();
+		};
+
+		trySpawn(0);
 	});
 }
 

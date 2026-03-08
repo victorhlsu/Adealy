@@ -12,6 +12,118 @@ import concurrent.futures
 from playwright.sync_api import sync_playwright
 
 
+def _parse_coords_from_text(text: str):
+    """Best-effort coordinate parser for common Google/Maps encodings."""
+    if not text:
+        return None
+
+    def _is_valid(lat: float, lng: float) -> bool:
+        try:
+            return -90.0 <= float(lat) <= 90.0 and -180.0 <= float(lng) <= 180.0
+        except Exception:
+            return False
+
+    patterns = [
+        # JSON-like
+        r'"lat"\s*:\s*([\-\d.]+)\s*,\s*"lng"\s*:\s*([\-\d.]+)',
+        r'"lng"\s*:\s*([\-\d.]+)\s*,\s*"lat"\s*:\s*([\-\d.]+)',
+        # Google Maps URL formats
+        r'@([\-\d.]+),([\-\d.]+),',
+        r'!3d([\-\d.]+)!4d([\-\d.]+)',
+        r'center=([\-\d.]+),([\-\d.]+)',
+        r'center=([\-\d.]+)%2C([\-\d.]+)',
+        r'query=([\-\d.]+),([\-\d.]+)',
+        r'query=([\-\d.]+)%2C([\-\d.]+)',
+    ]
+
+    for pat in patterns:
+        m = re.search(pat, text)
+        if not m:
+            continue
+
+        try:
+            a = float(m.group(1))
+            b = float(m.group(2))
+        except Exception:
+            continue
+
+        # Handle the swapped lng/lat pattern
+        if '"lng"' in pat and '"lat"' in pat and pat.startswith('"lng"'):
+            lat, lng = (b, a)
+        else:
+            lat, lng = (a, b)
+
+        if not _is_valid(lat, lng):
+            continue
+        return (lat, lng)
+
+    return None
+
+
+def _extract_geo_from_jsonld(obj):
+    """Recursively search JSON-LD for geo coordinates and address."""
+    if obj is None:
+        return None
+
+    if isinstance(obj, list):
+        for item in obj:
+            found = _extract_geo_from_jsonld(item)
+            if found:
+                return found
+        return None
+
+    if not isinstance(obj, dict):
+        return None
+
+    # Common schema.org pattern: { geo: { latitude, longitude }, address: {...} }
+    geo = obj.get('geo')
+    if isinstance(geo, dict):
+        lat = geo.get('latitude')
+        lng = geo.get('longitude')
+        try:
+            lat_f = float(lat) if lat is not None else None
+            lng_f = float(lng) if lng is not None else None
+        except Exception:
+            lat_f = None
+            lng_f = None
+
+        if lat_f is not None and lng_f is not None and (-90.0 <= lat_f <= 90.0) and (-180.0 <= lng_f <= 180.0):
+            addr = obj.get('address')
+            addr_str = None
+            if isinstance(addr, dict):
+                parts = [
+                    addr.get('streetAddress'),
+                    addr.get('addressLocality'),
+                    addr.get('addressRegion'),
+                    addr.get('postalCode'),
+                    addr.get('addressCountry'),
+                ]
+                parts = [str(p).strip() for p in parts if p]
+                if parts:
+                    addr_str = ', '.join(parts)
+            elif isinstance(addr, str) and addr.strip():
+                addr_str = addr.strip()
+            return (lat_f, lng_f, addr_str)
+
+    # Sometimes the object itself has latitude/longitude
+    if 'latitude' in obj and 'longitude' in obj:
+        try:
+            lat_f = float(obj.get('latitude'))
+            lng_f = float(obj.get('longitude'))
+            if (-90.0 <= lat_f <= 90.0) and (-180.0 <= lng_f <= 180.0):
+                return (lat_f, lng_f, None)
+        except Exception:
+            pass
+
+    # Recurse into children
+    for v in obj.values():
+        found = _extract_geo_from_jsonld(v)
+        if found:
+            return found
+
+    return None
+
+
 def main():
     """Main entry point for the worker."""
     try:
@@ -212,7 +324,7 @@ def _parse_hotel_card(hotel_link, currency, page, browser):
         if booking_url:
             try:
                 detail_page = browser.new_page()
-                detail_page.goto(booking_url, wait_until='domcontentloaded', timeout=8000)
+                detail_page.goto(booking_url, wait_until='domcontentloaded', timeout=12000)
                 detail_page.wait_for_timeout(2000)
                 
                 # Extract address from detail page
@@ -225,13 +337,51 @@ def _parse_hotel_card(hotel_link, currency, page, browser):
                 
                 # Extract coordinates from map link or page data
                 try:
-                    # Look for coordinates in the page URL or data attributes
-                    page_content = detail_page.content()
-                    # Google embeds coordinates in various formats, look for lat/lng patterns
-                    coord_match = re.search(r'\"lat\":([-\d.]+),\"lng\":([-\d.]+)', page_content)
-                    if coord_match:
-                        latitude = float(coord_match.group(1))
-                        longitude = float(coord_match.group(2))
+                    # 0) Prefer JSON-LD (schema.org) when present
+                    if latitude is None or longitude is None:
+                        scripts = detail_page.query_selector_all('script[type="application/ld+json"]')
+                        for s in scripts[:20]:
+                            txt = ''
+                            try:
+                                txt = (s.inner_text() or '').strip()
+                            except Exception:
+                                txt = ''
+                            if not txt:
+                                continue
+                            try:
+                                data = json.loads(txt)
+                            except Exception:
+                                continue
+                            found = _extract_geo_from_jsonld(data)
+                            if found:
+                                latitude, longitude, addr = found
+                                if (not address) and addr:
+                                    address = addr
+                                break
+
+                    # 1) Try to parse from the final URL (often contains @lat,lng)
+                    maybe = _parse_coords_from_text(detail_page.url)
+                    if maybe:
+                        latitude, longitude = maybe
+
+                    # 2) Try to parse from map-related links on the page
+                    if latitude is None or longitude is None:
+                        anchors = detail_page.query_selector_all('a[href]')
+                        for a in anchors[:250]:
+                            href = a.get_attribute('href') or ''
+                            if 'google.com/maps' not in href and 'maps.google' not in href:
+                                continue
+                            maybe = _parse_coords_from_text(href)
+                            if maybe:
+                                latitude, longitude = maybe
+                                break
+
+                    # 3) Fallback: scan HTML for embedded coordinate patterns
+                    if latitude is None or longitude is None:
+                        page_content = detail_page.content()
+                        maybe = _parse_coords_from_text(page_content)
+                        if maybe:
+                            latitude, longitude = maybe
                 except:
                     pass
                 

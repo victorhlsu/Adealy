@@ -21,6 +21,8 @@ import { useAppState } from "@/state/app-state";
 export default function ProfilePage() {
     const [, setLocation] = useLocation();
     const { user, isAuthenticated, isLoading: authLoading } = useAuth0();
+
+    const DEFAULT_AVATAR_URL = "https://static.vecteezy.com/system/resources/thumbnails/009/292/244/small/default-avatar-icon-of-social-media-user-vector.jpg";
     
     const [isLoading, setIsLoading] = useState(false);
     const [isFetchingProfile, setIsFetchingProfile] = useState(true);
@@ -60,6 +62,8 @@ export default function ProfilePage() {
 
     const handleSave = async () => {
         if (!user?.sub) return;
+
+        const looksLikeEmail = (s: string) => /@/.test(String(s || ''));
         
         setIsLoading(true);
         try {
@@ -68,8 +72,9 @@ export default function ProfilePage() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     auth0_id: user.sub,
-                    first_name: profileData?.first_name || user.given_name || (user.name ? user.name.split(' ')[0] : ""),
-                    last_name: profileData?.last_name || user.family_name || (user.name ? user.name.split(' ').slice(1).join(' ') : ""),
+                    email: user.email,
+                    first_name: profileData?.first_name || user.given_name || (!looksLikeEmail(user.name || "") ? (user.name ? user.name.split(' ')[0] : "") : ""),
+                    last_name: profileData?.last_name || user.family_name || (!looksLikeEmail(user.name || "") ? (user.name ? user.name.split(' ').slice(1).join(' ') : "") : ""),
                     departure_airport: profileData?.departure_airport || "",
                     passport_country: profileData?.passport_country || "",
                     passport_expiry_date: profileData?.passport_expiry_date || "",
@@ -134,13 +139,14 @@ export default function ProfilePage() {
                             const url = prompt("Enter new Avatar URL:");
                             if (url) handleChange("avatar_url", url);
                         }}>
-                           {(profileData?.avatar_url || user?.picture) ? (
-                               <img src={profileData?.avatar_url || user?.picture} alt="Avatar" className="w-full h-full object-cover" />
-                           ) : (
-                               <div className="w-full h-full bg-muted flex items-center justify-center">
-                                   <User className="h-10 w-10 text-muted-foreground" />
-                               </div>
-                           )}
+                           <img
+                               src={profileData?.avatar_url || user?.picture || DEFAULT_AVATAR_URL}
+                               alt="Avatar"
+                               className="w-full h-full object-cover"
+                               onError={(e) => {
+                                   (e.currentTarget as HTMLImageElement).src = DEFAULT_AVATAR_URL;
+                               }}
+                           />
                            <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
                                <Camera className="h-6 w-6 text-white" />
                            </div>

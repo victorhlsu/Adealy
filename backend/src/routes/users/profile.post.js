@@ -49,24 +49,40 @@ const handler = async (req, res) => {
 		}
 
 		// Insert or update based on auth0_id (which is unique)
-		const { data, error } = await supabase
-			.from('user_profiles')
-			.upsert(
-				{
-					auth0_id,
-					...(email && { email }),
-					first_name,
-					last_name,
-					departure_airport,
-					passport_country,
-					passport_expiry_date,
-					avatar_url,
-					updated_at: new Date().toISOString(),
-				},
-				{ onConflict: 'auth0_id' }
-			)
-			.select()
-			.single();
+		const basePayload = {
+			auth0_id,
+			...(email && { email }),
+			first_name,
+			last_name,
+			departure_airport,
+			passport_country,
+			passport_expiry_date,
+			updated_at: new Date().toISOString(),
+		};
+
+		const upsertProfile = async (payload) => {
+			return supabase
+				.from('user_profiles')
+				.upsert(payload, { onConflict: 'auth0_id' })
+				.select()
+				.single();
+		};
+
+		let result = await upsertProfile({
+			...basePayload,
+			...(avatar_url ? { avatar_url } : {}),
+		});
+
+		// Schema mismatch (common in hackathon DBs): retry without avatar_url.
+		if (
+			result?.error &&
+			result.error.code === 'PGRST204' &&
+			String(result.error.message || '').includes("'avatar_url'")
+		) {
+			result = await upsertProfile(basePayload);
+		}
+
+		const { data, error } = result;
 
 		if (error) {
 			console.error('Supabase error:', error);

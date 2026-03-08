@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { useAuth0 } from "@auth0/auth0-react";
 import { supabase } from "@/lib/supabase";
-import { Plus, Map as MapIcon, ChevronRight, LogOut, User as UserIcon, Calendar, Plane, MapPin, Users as UsersIcon, X, Search, ArrowRight, ArrowLeft, Trash2 } from "lucide-react";
+import { Plus, Map as MapIcon, ChevronRight, LogOut, Calendar, Plane, MapPin, Users as UsersIcon, X, Search, ArrowRight, ArrowLeft, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -10,8 +10,10 @@ import { ModeToggle } from "@/components/mode-toggle";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { formatMoney, parseMoneyToNumber } from "@/lib/money";
 
 export default function DashboardPage() {
+    const DEFAULT_AVATAR_URL = "https://static.vecteezy.com/system/resources/thumbnails/009/292/244/small/default-avatar-icon-of-social-media-user-vector.jpg";
     const [, setLocation] = useLocation();
     const { user, isAuthenticated, isLoading, logout } = useAuth0();
     const [rooms, setRooms] = useState<any[]>([]);
@@ -25,13 +27,20 @@ export default function DashboardPage() {
     const [endDate, setEndDate] = useState("");
     const [travelers, setTravelers] = useState({ adults: 1, children: 0 });
     const [selectedFlight, setSelectedFlight] = useState<any>(null);
+    const [skipFlight, setSkipFlight] = useState(false);
     const [flights, setFlights] = useState<any[]>([]);
+    const [flightResultsSource, setFlightResultsSource] = useState<string | null>(null);
     const [searchingFlights, setSearchingFlights] = useState(false);
     const [hasSearchedFlights, setHasSearchedFlights] = useState(false);
     const [fromAirports, setFromAirports] = useState<any[]>([]);
     const [toAirports, setToAirports] = useState<any[]>([]);
     const [fromAirport, setFromAirport] = useState("");
     const [toAirport, setToAirport] = useState("");
+    const [fromAirportMeta, setFromAirportMeta] = useState<any | null>(null);
+    const [toAirportMeta, setToAirportMeta] = useState<any | null>(null);
+    const [landingAirports, setLandingAirports] = useState<any[]>([]);
+    const [landingAirport, setLandingAirport] = useState("");
+    const [landingAirportMeta, setLandingAirportMeta] = useState<any | null>(null);
     const [creatingTrip, setCreatingTrip] = useState(false);
     const [flightType, setFlightType] = useState<'return' | 'one-way'>('return');
     const [wizardError, setWizardError] = useState<string | null>(null);
@@ -140,11 +149,14 @@ export default function DashboardPage() {
                 <div className="flex items-center gap-4">
                     <ModeToggle />
                     <Button variant="ghost" size="icon" onClick={() => setLocation("/profile")} className="w-12 h-12 rounded-full hover:bg-muted transition-all active:scale-95">
-                        {user?.picture ? (
-                            <img src={user.picture} alt="Profile" className="h-10 w-10 rounded-full border-2 border-border" />
-                        ) : (
-                            <UserIcon className="h-6 w-6 text-muted-foreground" />
-                        )}
+                        <img
+                            src={user?.picture || DEFAULT_AVATAR_URL}
+                            alt="Profile"
+                            className="h-10 w-10 rounded-full border-2 border-border object-cover"
+                            onError={(e) => {
+                                (e.currentTarget as HTMLImageElement).src = DEFAULT_AVATAR_URL;
+                            }}
+                        />
                     </Button>
                     <Button variant="ghost" size="icon" onClick={() => logout({ logoutParams: { returnTo: window.location.origin } })} className="w-12 h-12 rounded-md hover:bg-muted">
                         <LogOut className="h-6 w-6 text-muted-foreground hover:text-red-500 transition-colors" />
@@ -440,6 +452,7 @@ export default function DashboardPage() {
                                                     onChange={async (e) => {
                                                         const val = e.target.value;
                                                         setFromAirport(val);
+                                                        setFromAirportMeta(null);
                                                         if (val.length >= 2) {
                                                             try {
                                                                 const res = await fetch('/api/data/airports', {
@@ -465,7 +478,7 @@ export default function DashboardPage() {
                                                     {fromAirports.map(a => (
                                                         <button
                                                             key={a.code}
-                                                            onClick={() => { setFromAirport(a.code); setFromAirports([]); }}
+                                                            onClick={() => { setFromAirport(a.code); setFromAirportMeta(a); setFromAirports([]); }}
                                                             className="w-full px-4 py-3 text-left hover:bg-gray-100 border-b border-gray-100 last:border-none group"
                                                         >
                                                             <div className="flex items-center justify-between">
@@ -487,6 +500,7 @@ export default function DashboardPage() {
                                                     onChange={async (e) => {
                                                         const val = e.target.value;
                                                         setToAirport(val);
+                                                        setToAirportMeta(null);
                                                         if (val.length >= 2) {
                                                             try {
                                                                 const res = await fetch('/api/data/airports', {
@@ -516,7 +530,7 @@ export default function DashboardPage() {
                                                     {toAirports.map(a => (
                                                         <button
                                                             key={a.code}
-                                                            onClick={() => { setToAirport(a.code); setToAirports([]); }}
+                                                            onClick={() => { setToAirport(a.code); setToAirportMeta(a); setToAirports([]); }}
                                                             className="w-full px-4 py-3 text-left hover:bg-muted border-b border-border last:border-none group"
                                                         >
                                                             <div className="flex items-center justify-between">
@@ -550,19 +564,95 @@ export default function DashboardPage() {
                                                 });
                                                 const data = await res.json();
                                                 setFlights(data.direct_flights || []);
+                                                setFlightResultsSource(data.source || null);
                                             } catch (e) {
                                                 console.error("Flight search failed", e);
+                                                setFlightResultsSource(null);
                                             } finally {
                                                 setSearchingFlights(false);
                                             }
                                         }}
-                                        disabled={!fromAirport || !toAirport || searchingFlights}
+                                        disabled={skipFlight || !fromAirport || !toAirport || searchingFlights}
                                         className="w-full h-12 font-black uppercase tracking-widest"
                                     >
                                         {searchingFlights ? "Searching..." : "Search Flights"}
                                     </Button>
 
-                                    <div className="space-y-3 max-h-[250px] overflow-y-auto pr-2">
+                                    <label className="flex items-center gap-2 text-xs font-bold text-muted-foreground bg-muted/40 border border-border/50 rounded-lg p-3 cursor-pointer select-none">
+                                        <input
+                                            type="checkbox"
+                                            checked={skipFlight}
+                                            onChange={(e) => {
+                                                const next = e.target.checked;
+                                                setSkipFlight(next);
+                                                if (next) {
+                                                    setSelectedFlight(null);
+                                                    setFlights([]);
+                                                    setHasSearchedFlights(false);
+                                                    setFlightResultsSource(null);
+                                                    setLandingAirport("");
+                                                    setLandingAirports([]);
+												setLandingAirportMeta(null);
+                                                }
+                                            }}
+                                            className="rounded border-border accent-primary"
+                                        />
+                                        <span>Skip flight selection (already booked)</span>
+                                    </label>
+
+                                    {skipFlight && (
+                                        <div className="space-y-2 relative">
+                                            <Label className="text-xs font-black uppercase tracking-widest text-gray-500">Where are you landing?</Label>
+                                            <div className="relative">
+                                                <Plane className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                                                <Input
+                                                    value={landingAirport}
+                                                    onChange={async (e) => {
+                                                        const val = e.target.value;
+                                                        setLandingAirport(val);
+												setLandingAirportMeta(null);
+                                                        if (val.length >= 2) {
+                                                            try {
+                                                                const res = await fetch('/api/data/airports', {
+                                                                    method: 'POST',
+                                                                    headers: { 'Content-Type': 'application/json' },
+                                                                    body: JSON.stringify({ city: val, limit: 10 })
+                                                                });
+                                                                const data = await res.json();
+                                                                setLandingAirports(data.airports || []);
+                                                            } catch (e) {
+                                                                console.error("Failed to search landing airports", e);
+                                                            }
+                                                        } else {
+                                                            setLandingAirports([]);
+                                                        }
+                                                    }}
+                                                    placeholder="City or Airport Code"
+                                                    className="h-12 pl-10 text-sm font-bold border-2 shadow-none"
+                                                />
+                                            </div>
+                                            {landingAirports.length > 0 && landingAirport.length >= 2 && (
+                                                <div className="absolute top-full left-0 w-full mt-1 bg-card border-2 border-border rounded-lg shadow-xl z-50 max-h-[150px] overflow-y-auto">
+                                                    {landingAirports.map(a => (
+                                                        <button
+                                                            key={a.code}
+                                                            onClick={() => { setLandingAirport(a.code); setLandingAirportMeta(a); setLandingAirports([]); }}
+                                                            className="w-full px-4 py-3 text-left hover:bg-muted border-b border-border last:border-none group"
+                                                        >
+                                                            <div className="flex items-center justify-between">
+                                                                <span className="font-black text-sm text-primary">{a.code}</span>
+                                                                <span className="text-[10px] font-bold text-muted-foreground uppercase">{a.city}, {a.countryCode}</span>
+                                                            </div>
+                                                            <p className="text-[10px] font-medium text-muted-foreground truncate">{a.name}</p>
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
+                                            <p className="text-[11px] text-muted-foreground">This helps Adealy plan routes from the airport.</p>
+                                        </div>
+                                    )}
+
+                                    <div className={cn("space-y-3 max-h-[250px] overflow-y-auto pr-2", skipFlight && "opacity-50 pointer-events-none")}>
                                         {flights.length > 0 ? (
                                             flights.map((f, i) => (
                                                 <div
@@ -583,7 +673,7 @@ export default function DashboardPage() {
                                                         </div>
                                                     </div>
                                                     <div className="text-right">
-                                                        <p className="text-lg font-black text-primary">{f.price}</p>
+                                                        <p className="text-lg font-black text-primary">{formatMoney(f.price)}</p>
                                                         <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-tighter">{f.duration}</p>
                                                     </div>
                                                 </div>
@@ -597,6 +687,12 @@ export default function DashboardPage() {
                                             </div>
                                         )}
                                     </div>
+
+                                    {flightResultsSource && (
+                                        <div className="mt-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                                            Source: <span className="text-foreground">{flightResultsSource}</span>
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>
@@ -658,78 +754,78 @@ export default function DashboardPage() {
                                                     ai_status: 'idle'
                                                 });
 
-                                                // Insert initial message with flight data
-                                                if (selectedFlight) {
-                                                    const priceStr = (selectedFlight.price || "0").replace(/[^0-9]/g, '');
-                                                    const price = parseInt(priceStr) || 0;
+                                                // Always initialize trip data so planner loads cleanly
+                                                const resolvedEndDate = (flightType === 'one-way' || !endDate) ? startDate : endDate;
+                                                const tripDays = Math.ceil((new Date(resolvedEndDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24)) || 1;
 
-                                                    const flightCard = {
+                                                let budgetUsed = 0;
+                                                const cards: any[] = [];
+
+                                                if (!skipFlight && selectedFlight) {
+                                                    budgetUsed = parseMoneyToNumber(selectedFlight.price || 0);
+
+                                                    const fromLat = Number(fromAirportMeta?.latitude);
+                                                    const fromLng = Number(fromAirportMeta?.longitude);
+                                                    const toLat = Number(toAirportMeta?.latitude);
+                                                    const toLng = Number(toAirportMeta?.longitude);
+
+                                                    const hasFrom = Number.isFinite(fromLat) && Number.isFinite(fromLng);
+                                                    const hasTo = Number.isFinite(toLat) && Number.isFinite(toLng);
+
+                                                    cards.push({
                                                         id: `flight_${Date.now()}`,
                                                         type: "transport",
                                                         layer: "transport",
                                                         day: 1,
                                                         name: `Flight to ${destination}`,
-                                                        position: { lat: 0, lng: 0 }, // Will be fixed by AI later
+                                                        // Never default to (0,0) which looks like an airport in the ocean.
+                                                        position: hasTo ? { lat: toLat, lng: toLng } : undefined,
                                                         data: {
                                                             mode: "flight",
-                                                            price: price,
+                                                            price: budgetUsed,
                                                             description: `${selectedFlight.name}: ${selectedFlight.departure} - ${selectedFlight.arrival}`,
                                                             startTime: selectedFlight.departure,
                                                             endTime: selectedFlight.arrival,
                                                             bookingUrl: selectedFlight.booking_url,
-                                                            from: { name: fromAirport },
-                                                            to: { name: toAirport }
+                                                            from: hasFrom ? { name: fromAirport, lat: fromLat, lng: fromLng } : { name: fromAirport },
+                                                            to: hasTo ? { name: toAirport, lat: toLat, lng: toLng } : { name: toAirport }
                                                         }
-                                                    };
-
-                                                    const tripData = {
-                                                        title: `${destination} Trip`,
-                                                        destination: destination,
-                                                        startDate,
-                                                        endDate,
-                                                        days: Math.ceil((new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24)) || 1,
-                                                        summary: {
-                                                            estimatedBudget: totalBudget || 2500,
-                                                            budgetUsed: price,
-                                                            travelers: travelers.adults + travelers.children
-                                                        },
-                                                        cards: [flightCard]
-                                                    };
-
-                                                    await supabase.from('messages').insert({
-                                                        room_id: room.id,
-                                                        content: `__TRIP_DATA__:${JSON.stringify(tripData)}`,
-                                                        is_ai: true
                                                     });
-
-                                                    await supabase.from('messages').insert({
-                                                        room_id: room.id,
-                                                        content: `Success! I've started your trip to ${destination} with the selected flight. Mention @Adealy to continue planning your itinerary.`,
-                                                        is_ai: true
-                                                    });
-
-                                                    // [AUTO-PLANNING] Trigger Gemini immediately
-                                                    const autoPrompt = `@Adealy I've just started my journey to ${destination}! Please architect a full ${tripData.days}-day itinerary for me, including stays, local transit, and daily hidden gems/activities. Use the flight I picked as the starting point!`;
-
-                                                    // 1. Insert User Message
-                                                    await supabase.from('messages').insert({
-                                                        room_id: room.id,
-                                                        sender_id: user!.sub,
-                                                        content: autoPrompt,
-                                                        is_ai: false
-                                                    });
-
-                                                    // 2. Trigger API (Fire and forget, we are redirecting anyway)
-                                                    fetch('/api/chat', {
-                                                        method: 'POST',
-                                                        headers: { 'Content-Type': 'application/json' },
-                                                        body: JSON.stringify({
-                                                            room_id: room.id,
-                                                            prompt: autoPrompt,
-                                                            auth0_id: user!.sub
-                                                        })
-                                                    }).catch(err => console.error("Auto-planning trigger failed:", err));
                                                 }
+
+                                                const tripData: any = {
+                                                    title: `${destination} Trip`,
+                                                    destination: destination,
+                                                    startDate,
+                                                    endDate: resolvedEndDate,
+                                                    days: tripDays,
+                                                    arrivalAirport: skipFlight ? landingAirport : toAirport,
+											center: (() => {
+												const a = skipFlight ? landingAirportMeta : toAirportMeta;
+												const lat = Number(a?.latitude);
+												const lng = Number(a?.longitude);
+												if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+												return null;
+											})(),
+                                                    summary: {
+                                                        estimatedBudget: totalBudget || 2500,
+                                                        budgetUsed,
+                                                        travelers: travelers.adults + travelers.children
+                                                    },
+                                                    cards
+                                                };
+
+                                                await supabase.from('messages').insert({
+                                                    room_id: room.id,
+                                                    content: `__TRIP_DATA__:${JSON.stringify(tripData)}`,
+                                                    is_ai: true
+                                                });
+
+                                                await supabase.from('messages').insert({
+                                                    room_id: room.id,
+                                                    content: `Success! Trip created for ${destination}. Next: click “Find Stays” and choose your hotel first (it will appear on the map). After that, mention @Adealy to generate the itinerary.`,
+                                                    is_ai: true
+                                                });
 
                                                 setLocation(`/planner/${room.id}`);
                                             } catch (err: any) {
@@ -739,7 +835,7 @@ export default function DashboardPage() {
                                                 setCreatingTrip(false);
                                             }
                                         }}
-                                        disabled={!selectedFlight || creatingTrip}
+                                        disabled={creatingTrip || (!skipFlight && !selectedFlight) || (skipFlight && !landingAirport)}
                                         className="h-12 px-10 font-black uppercase tracking-widest bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
                                     >
                                         {creatingTrip ? "Starting..." : "Create Trip"}

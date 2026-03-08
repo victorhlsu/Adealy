@@ -1,8 +1,50 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { supabase } = require('../../supabase/client');
+const { jsonrepair } = require('jsonrepair');
 const dotenv = require('dotenv');
 const path = require('path');
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
+
+function stripCodeFences(text) {
+    let cleaned = String(text || '').trim();
+    if (cleaned.startsWith('```json')) cleaned = cleaned.replace(/^```json\s*/i, '').replace(/\s*```\s*$/i, '');
+    else if (cleaned.startsWith('```')) cleaned = cleaned.replace(/^```\s*/i, '').replace(/\s*```\s*$/i, '');
+    return cleaned.trim();
+}
+
+function extractLikelyJson(text) {
+    const s = String(text || '');
+    const start = s.indexOf('{');
+    const end = s.lastIndexOf('}');
+    if (start === -1 || end === -1 || end <= start) return null;
+    return s.slice(start, end + 1);
+}
+
+function safeParseGeminiJson(text) {
+    const cleaned = stripCodeFences(text);
+
+    const attempts = [];
+    attempts.push(cleaned);
+    const extracted = extractLikelyJson(cleaned);
+    if (extracted && extracted !== cleaned) attempts.push(extracted);
+
+    for (const a of attempts) {
+        try {
+            return JSON.parse(a);
+        } catch {
+            // try next strategy
+        }
+
+        try {
+            const repaired = jsonrepair(a);
+            return JSON.parse(repaired);
+        } catch {
+            // continue
+        }
+    }
+
+    return null;
+}
 
 async function fetchOsrmRouteServer(coords, mode = 'driving') {
     if (!coords || coords.length < 2) return null;
@@ -107,6 +149,36 @@ CRITICAL INSTRUCTION - MAP ROUTING AND DAILY SCHEDULE:
 CRITICAL INSTRUCTION - CLOUDINARY IMAGES:
 For \`data.imageUrl\` on stays and activities, always prefer high-quality image URLs from sources like Unsplash. The frontend will automatically pipe these through Cloudinary for formatting, so provide raw, high resolution direct HTTPs image links.`;
 
+function stripTripForModel(trip) {
+    if (!trip || typeof trip !== 'object') return null;
+    const safe = { ...trip };
+    if (Array.isArray(safe.cards)) {
+        safe.cards = safe.cards.map((card) => {
+            const next = { ...card, data: { ...(card?.data || {}) } };
+            // GeoJSON can be huge and isn't needed to edit a schedule.
+            if (next?.data?.routeGeometry) delete next.data.routeGeometry;
+            return next;
+        });
+    }
+    return safe;
+}
+
+function extractLatestTripFromMessages(messages) {
+    if (!Array.isArray(messages)) return null;
+    let latest = null;
+    for (const m of messages) {
+        const c = String(m?.content || '');
+        if (!c.startsWith('__TRIP_DATA__:')) continue;
+        try {
+            const json = JSON.parse(c.replace('__TRIP_DATA__:', ''));
+            latest = json;
+        } catch {
+            // ignore parse errors
+        }
+    }
+    return latest;
+}
+
 async function handler(req, res) {
     // We are no longer using SSE directly to the frontend because we rely on Supabase Realtime!
     // But we still return a response so the client knows we received it.
@@ -159,17 +231,29 @@ async function handler(req, res) {
             .select('is_ai, content')
             .eq('room_id', room_id)
             .order('created_at', { ascending: true })
-            .limit(50);
+            .limit(120);
 
         if (messagesError) {
             console.error('Error fetching history:', messagesError);
             return;
         }
 
+        const latestTripRaw = extractLatestTripFromMessages(messages || []);
+        const latestTrip = stripTripForModel(latestTripRaw);
+
+        // Filter out hidden/control messages so they don't pollute chat history.
+        const visibleConversation = (messages || []).filter((m) => {
+            const c = String(m?.content || '');
+            if (c.startsWith('__TRIP_DATA__:')) return false;
+            if (c.startsWith('__PAYMENT__:')) return false;
+            if (c.startsWith('__REFUND__:')) return false;
+            return true;
+        });
+
         // 4. Generate AI response
         // Gemini strictly requires alternating roles starting with 'user'
         let formattedContents = [];
-        for (const m of (messages || [])) {
+        for (const m of visibleConversation) {
             const role = m.is_ai ? 'model' : 'user';
 
             if (formattedContents.length === 0) {
@@ -191,7 +275,28 @@ async function handler(req, res) {
             }
         }
 
-        const contents = formattedContents.length > 0 ? formattedContents : [{ role: 'user', parts: [{ text: prompt }] }];
+        // Ensure the latest user turn includes the request prompt (which can contain rich client context)
+        // without having to store that extra context in the DB.
+        const reqPrompt = String(prompt || '').trim();
+        if (reqPrompt) {
+            if (formattedContents.length > 0) {
+                const last = formattedContents[formattedContents.length - 1];
+                if (last.role === 'user') {
+                    const lastText = String(last.parts?.[0]?.text || '').trim();
+                    if (lastText && reqPrompt.startsWith(lastText)) {
+                        last.parts[0].text = reqPrompt;
+                    } else {
+                        formattedContents.push({ role: 'user', parts: [{ text: reqPrompt }] });
+                    }
+                } else {
+                    formattedContents.push({ role: 'user', parts: [{ text: reqPrompt }] });
+                }
+            } else {
+                formattedContents = [{ role: 'user', parts: [{ text: reqPrompt }] }];
+            }
+        }
+
+        const contents = formattedContents;
 
         let userName = 'Traveler';
         try {
@@ -203,7 +308,11 @@ async function handler(req, res) {
             console.error('Failed to get user profile name:', err);
         }
 
-        const dynamicSystemInstruction = systemInstruction + `\n\n-----------------\nYou are currently responding to a user named ${userName}. ALWAYS greet them personally by this name when introducing a plan or responding to an initial request!`;
+        let dynamicSystemInstruction = systemInstruction + `\n\n-----------------\nYou are currently responding to a user named ${userName}. ALWAYS greet them personally by this name when introducing a plan or responding to an initial request!`;
+
+        if (latestTrip) {
+            dynamicSystemInstruction += `\n\n-----------------\nEXISTING TRIP CONTEXT (AUTHORITATIVE):\nThe room already has an itinerary. DO NOT regenerate a brand new trip unless the user explicitly asks to start over. Instead, make the MINIMUM changes needed to satisfy the latest request, preserving existing card ids/structure where possible.\n\nCurrent trip snapshot (JSON):\n${JSON.stringify(latestTrip)}`;
+        }
 
         console.log('Calling Gemini API for user:', userName);
         const model = genAI.getGenerativeModel({
@@ -225,13 +334,14 @@ async function handler(req, res) {
         // Ensure parsing works
         let finalMessage = "I processed your request, but couldn't format it right.";
         let tripData = null;
-        try {
-            const parsed = JSON.parse(geminiResponseText || '{}');
+        const parsed = safeParseGeminiJson(geminiResponseText);
+        if (parsed && typeof parsed === 'object') {
             finalMessage = parsed.message || finalMessage;
             tripData = parsed.trip || null;
-        } catch (e) {
-            console.error("Failed to parse AI response", e);
-            finalMessage = geminiResponseText;
+        } else {
+            // Don't fail the whole pipeline just because JSON formatting is slightly off.
+            console.error('Failed to parse AI response as JSON (falling back to plain text).');
+            finalMessage = stripCodeFences(geminiResponseText);
         }
 
         // We will insert 2 messages: the message string, and potentially a hidden message string with JSON payload for cards

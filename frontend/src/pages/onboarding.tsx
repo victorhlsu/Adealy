@@ -50,6 +50,7 @@ export default function OnboardingPage() {
         body: JSON.stringify({
           auth0_id: user.sub,
           email: user.email,
+          avatar_url: user.picture,
           first_name: formData.firstName,
           last_name: formData.lastName,
           departure_airport: formData.departureAirport,

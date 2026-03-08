@@ -47,7 +47,7 @@ export type TripCardData = {
         lng: number;
         cardId: string;
     };
-    mode?: 'transit' | 'driving' | 'walking' | 'bicycling';
+    mode?: 'transit' | 'driving' | 'walking' | 'bicycling' | 'flight' | 'train' | 'bus';
     departureTime?: string;
     arrivalTime?: string;
     distance?: number;
@@ -61,7 +61,14 @@ export type TripCardData = {
         }[];
         polyline?: string;
     };
+    routeGeometry?: any;
     connectsCards?: string[];
+
+    // Booking (optional)
+    bookingStatus?: 'unbooked' | 'pending' | 'booked' | 'failed';
+    bookingProvider?: string;
+    bookingReference?: string;
+    bookingConfirmedAt?: string;
 };
 
 export type TripCard = {
@@ -81,6 +88,7 @@ export type TripMetadata = {
     startDate: string;
     endDate: string;
     days: number;
+    arrivalAirport?: string;
     summary?: {
         totalStays: number;
         totalActivities: number;

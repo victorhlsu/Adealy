@@ -64,6 +64,7 @@ const searchFlights = async (req, res) => {
 				currentPrice: cached.currentPrice,
 				count: directFromCache.length + connectingFromCache.length,
 				booking_url: Array.isArray(cachedFlights) ? null : cachedFlights?.booking_url || null,
+				source: 'cache',
 				cached: true,
 			});
 		}
@@ -80,6 +81,7 @@ const searchFlights = async (req, res) => {
 				currentPrice: 'unknown',
 				count: 0,
 				booking_url: result.booking_url || null,
+				source: result.source || 'error',
 				cached: false,
 			});
 		}
@@ -103,6 +105,7 @@ const searchFlights = async (req, res) => {
 			currentPrice: result.currentPrice,
 			count: directFlights.length + connectingFlights.length,
 			booking_url: result.booking_url || null,
+			source: result.source || 'real',
 			cached: false,
 		});
 	} catch (err) {
@@ -115,6 +118,7 @@ const searchFlights = async (req, res) => {
 			currentPrice: 'unknown',
 			count: 0,
 			booking_url: null,
+			source: 'error',
 			cached: false,
 		});
 	}

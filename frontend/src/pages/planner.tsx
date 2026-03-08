@@ -14,19 +14,18 @@ import {
   Mail,
   Users,
   Lock,
-  User as UserIcon,
   UserPlus,
   ExternalLink,
-  CheckCircle2,
-  Clock,
   BedDouble,
   Camera,
+  Plane,
   Train,
   CreditCard,
   ArrowRight,
   Footprints,
   Car,
   Bike,
+  Search,
   Send,
   ShoppingBag,
   Check
@@ -42,9 +41,110 @@ import type { Trip, TripCard } from "@/types/trip";
 import { ModeToggle } from "@/components/mode-toggle";
 import { supabase } from "@/lib/supabase";
 import { getOptimizedImageUrl } from "@/lib/cloudinary";
+import { formatMoney, parseMoneyToNumber } from "@/lib/money";
+import { geocodePlace, searchHotels, type HotelsResponse } from "@/services/backend";
 
 export default function PlannerPage({ roomId }: { roomId?: string }) {
   const [, setLocation] = useLocation();
+  const DEFAULT_AVATAR_URL = 'https://static.vecteezy.com/system/resources/thumbnails/009/292/244/small/default-avatar-icon-of-social-media-user-vector.jpg';
+
+  const looksLikeEmail = (s: string) => /@/.test(String(s || ''));
+  const getEmailPrefix = (email?: string | null) => {
+    const e = String(email || '').trim();
+    if (!e) return '';
+    const at = e.indexOf('@');
+    return at > 0 ? e.slice(0, at) : e;
+  };
+
+  const getBestMyDisplayName = () => {
+    const first = String((profileData as any)?.first_name || '').trim();
+    const last = String((profileData as any)?.last_name || '').trim();
+    if (first) return `${first} ${last}`.trim();
+
+    const given = String((user as any)?.given_name || '').trim();
+    const family = String((user as any)?.family_name || '').trim();
+    if (given || family) return `${given} ${family}`.trim();
+
+    const name = String((user as any)?.name || '').trim();
+    if (name && !looksLikeEmail(name)) {
+      if (name.includes(',')) {
+        const [left, right] = name.split(',', 2).map((p: string) => String(p || '').trim());
+        const normalized = `${right} ${left}`.trim();
+        return normalized || name;
+      }
+      return name;
+    }
+
+    const email = String((user as any)?.email || '').trim();
+    const prefix = getEmailPrefix(email);
+    return prefix || 'Guest';
+  };
+
+  const stripTripForPrompt = (t: any) => {
+    if (!t || typeof t !== 'object') return null;
+    const next: any = { ...t };
+    if (Array.isArray(next.cards)) {
+      next.cards = next.cards.map((c: any) => {
+        const data = { ...(c?.data || {}) };
+        if (data.routeGeometry) delete data.routeGeometry;
+        return { ...c, data };
+      });
+    }
+    return next;
+  };
+
+  const truncateForModel = (text: string, maxChars: number) => {
+    const s = String(text || '');
+    if (s.length <= maxChars) return s;
+    return s.slice(0, maxChars) + `\n...[truncated ${s.length - maxChars} chars]`;
+  };
+
+  const buildAdealyContextBlock = () => {
+    const t: any = trip as any;
+    const snapshot = stripTripForPrompt({ ...(t || {}), cards: Array.isArray(cards) ? cards : (t?.cards || []) });
+    const ui = {
+      selectedDay,
+      activeLayer,
+      viewMode,
+      focusedCardId,
+      roomId,
+    };
+    const block = {
+      instructions: "This room already has a trip. Update the existing itinerary; do not regenerate from scratch unless explicitly requested. Preserve existing card ids when possible.",
+      ui,
+      trip: snapshot,
+    };
+    return truncateForModel(JSON.stringify(block), 12000);
+  };
+
+  const isValidLatLng = (lat: any, lng: any) => {
+    return (
+      typeof lat === 'number' &&
+      typeof lng === 'number' &&
+      Number.isFinite(lat) &&
+      Number.isFinite(lng) &&
+      lat >= -90 &&
+      lat <= 90 &&
+      lng >= -180 &&
+      lng <= 180
+    );
+  };
+
+  const geocodeBestEffort = async (query: string) => {
+    const q = String(query || '').trim();
+    if (!q) return null;
+    try {
+      const resp = await geocodePlace(q);
+      if ((resp as any)?.status !== 'ok') return null;
+      const ok = resp as any;
+      if (!isValidLatLng(ok.latitude, ok.longitude)) return null;
+      return { lat: ok.latitude as number, lng: ok.longitude as number, address: ok.address as any };
+    } catch {
+      return null;
+    }
+  };
+
+  const centerGeocodeRef = useRef(false);
 
   const [prompt, setPrompt] = useState("");
   const [aiStatus, setAiStatus] = useState<'idle' | 'thinking' | 'cooldown' | 'payment' | 'booking' | 'booked'>('idle');
@@ -61,16 +161,400 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   const [inviteMessage, setInviteMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [showCheckoutModal, setShowCheckoutModal] = useState(false);
+  const [showBookingModal, setShowBookingModal] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [hasPaidLocal, setHasPaidLocal] = useState<string[]>([]);
+
+  const [showHotelsModal, setShowHotelsModal] = useState(false);
+  const [hotelsLoading, setHotelsLoading] = useState(false);
+  const [hotelsError, setHotelsError] = useState<string | null>(null);
+  const [hotels, setHotels] = useState<HotelsResponse['hotels']>([]);
+  const [hotelsSearchUrl, setHotelsSearchUrl] = useState<string | null>(null);
+  const [hotelsQuery, setHotelsQuery] = useState({
+    location: '',
+    checkin: '',
+    checkout: '',
+    adults: 1,
+    children: 0,
+    rooms: 1,
+    currency: 'USD',
+  });
+
+  const bookingQueueRef = useRef<string[]>([]);
+  const bookingLastStepRef = useRef<number>(0);
+  const autoHotelsLoadedRef = useRef(false);
+
+  const getStaticMapImageUrl = (lat: number, lng: number, w = 800, h = 400) => {
+    // Keyless static thumbnail (attribution is handled by OSM page; this is a hackathon-friendly fallback)
+    const zoom = 14;
+    return `https://staticmap.openstreetmap.de/staticmap.php?center=${lat},${lng}&zoom=${zoom}&size=${w}x${h}&markers=${lat},${lng},red-pushpin`;
+  };
+
+  const getPlaceholderImageUrl = (label: string, w = 800, h = 400) => {
+    const safe = String(label || 'Location').slice(0, 26);
+    const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0ea5e9" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#22c55e" stop-opacity="0.25"/>
+    </linearGradient>
+  </defs>
+  <rect width="100%" height="100%" fill="#0b1220"/>
+  <rect width="100%" height="100%" fill="url(#g)"/>
+  <text x="50%" y="52%" text-anchor="middle" dominant-baseline="middle" font-family="ui-sans-serif, system-ui, -apple-system" font-size="32" fill="#e2e8f0" font-weight="700">${safe.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</text>
+  <text x="50%" y="70%" text-anchor="middle" dominant-baseline="middle" font-family="ui-sans-serif, system-ui, -apple-system" font-size="14" fill="#94a3b8" font-weight="600">Image unavailable</text>
+</svg>`;
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  };
+
+  const getCardImageUrl = (card: any) => {
+    if (card?.data?.imageUrl) return String(card.data.imageUrl);
+    if (card?.position && typeof card.position.lat === 'number' && typeof card.position.lng === 'number') {
+      return getStaticMapImageUrl(card.position.lat, card.position.lng);
+    }
+
+    const name = String(card?.name || '').trim();
+    const base =
+      card?.type === 'transport'
+        ? 'airport,airplane,travel'
+        : card?.type === 'stay'
+          ? 'hotel,travel'
+          : 'restaurant,attraction,travel';
+    const query = name ? `${encodeURIComponent(name)},${base}` : base;
+    return `https://source.unsplash.com/800x400/?${query}`;
+  };
+
+  const ensureImgFallback = (img: HTMLImageElement, fallbackSrc: string) => {
+    const el = img as any;
+    if (el.dataset?.fallbackApplied === '1') return;
+    if (el.dataset) el.dataset.fallbackApplied = '1';
+    img.src = fallbackSrc;
+  };
+
+  const selectHotel = async (h: HotelsResponse['hotels'][number]) => {
+    if (!roomId) return;
+    if (!trip) {
+      setHotelsError('Trip is not initialized yet.');
+      return;
+    }
+
+    // Never hard-block selection just because upstream forgot coordinates.
+    let lat: number | null = (typeof h.latitude === 'number' ? h.latitude : null);
+    let lng: number | null = (typeof h.longitude === 'number' ? h.longitude : null);
+
+    if (!isValidLatLng(lat, lng)) {
+      const city = String(hotelsQuery.location || (trip as any)?.destination || '').trim();
+      const q = [h.name, h.address, city].filter(Boolean).join(', ');
+      const geo = await geocodeBestEffort(q);
+      if (geo) {
+        lat = geo.lat;
+        lng = geo.lng;
+      }
+    }
+
+    if (!isValidLatLng(lat, lng)) {
+      const existingCenter = (trip as any)?.center;
+      if (isValidLatLng(existingCenter?.lat, existingCenter?.lng)) {
+        lat = existingCenter.lat;
+        lng = existingCenter.lng;
+      } else {
+        const destination = String((trip as any)?.destination || hotelsQuery.location || '').trim();
+        const geo = await geocodeBestEffort(destination);
+        if (geo) {
+          lat = geo.lat;
+          lng = geo.lng;
+
+          const updatedTrip: any = { ...(trip as any), center: { lat: geo.lat, lng: geo.lng } };
+          setTrip(updatedTrip);
+          if (roomId) {
+            supabase.from('messages').insert({
+              room_id: roomId,
+              content: `__TRIP_DATA__:${JSON.stringify(updatedTrip)}`,
+              is_ai: true,
+            }).then();
+          }
+        }
+      }
+    }
+
+    if (!isValidLatLng(lat, lng)) {
+      setHotelsError('Could not locate this hotel on the map. Try another result.');
+      return;
+    }
+
+    const parsedPrice = parseMoneyToNumber(h.priceTotal ?? h.pricePerNight ?? 0);
+
+    const id = `stay_${Date.now()}`;
+    const newCard: any = {
+      id,
+      type: 'stay',
+      layer: 'stays',
+      day: 1,
+      name: h.name,
+      position: { lat, lng },
+      data: {
+        name: h.name,
+        description: h.address || h.distanceFromCenter || 'Selected hotel',
+        address: h.address,
+        price: parsedPrice,
+        bookingUrl: h.bookingUrl,
+        imageUrl: h.image,
+        rating: h.rating,
+        isPrimaryStay: true,
+        checkIn: (trip as any)?.startDate,
+        checkOut: (trip as any)?.endDate,
+      },
+    };
+
+    // Make this the primary stay and demote others
+    const nextCards = (Array.isArray(cards) ? cards : []).map((c: any) => {
+      if (c?.type !== 'stay') return c;
+      return {
+        ...c,
+        data: {
+          ...c.data,
+          isPrimaryStay: false,
+        },
+      };
+    });
+    nextCards.push(newCard);
+
+    setCards(nextCards);
+    setTrip({ ...(trip as any), cards: nextCards });
+
+    await supabase.from('messages').insert({
+      room_id: roomId,
+      content: `__TRIP_DATA__:${JSON.stringify({ ...(trip as any), cards: nextCards })}`,
+      is_ai: true,
+    });
+
+    setShowHotelsModal(false);
+    setHotelsError(null);
+
+    setViewMode('map');
+    if (roomId) supabase.from('room_state').update({ focused_view: 'map' }).eq('room_id', roomId).then();
+    setFocusedCardId(id);
+
+    setMessages(prev => [...prev, { is_ai: true, content: `✅ Hotel selected: ${h.name}. It’s pinned on the map — generating your itinerary now...` }]);
+
+    // Auto-prompt Adealy once a stay is selected.
+    try {
+      if (aiStatus !== 'idle') {
+        setMessages(prev => [...prev, { is_ai: true, content: "⏳ Adealy is busy — once it’s idle, mention @Adealy to plan the rest." }]);
+        return;
+      }
+
+      // Trip is locked once anyone starts paying.
+      if (someOnePaid) return;
+      if (!user?.sub) return;
+
+      const me = members.find(m => m.user_id === user.sub);
+      if (me && me.can_prompt_ai === false) {
+        setMessages(prev => [...prev, { is_ai: true, content: "⚠️ You don’t have permission to prompt @Adealy in this room." }]);
+        return;
+      }
+
+      const arrivalAirport = (trip as any)?.arrivalAirport || 'unknown';
+      const destination = String((trip as any)?.destination || '').trim() || 'the destination';
+      const days = Number((trip as any)?.days) || 1;
+      const start = String((trip as any)?.startDate || '').trim();
+      const end = String((trip as any)?.endDate || '').trim();
+
+      const currentPrompt = `@Adealy Build a ${days}-day itinerary for ${destination}. We arrive at ${arrivalAirport}. We are staying at "${h.name}". Dates: ${start} to ${end}. Include activities + local transport, and balance cost.`;
+
+      const { error } = await supabase.from('messages').insert({
+        room_id: roomId,
+        sender_id: user.sub,
+        content: currentPrompt,
+        is_ai: false,
+      });
+      if (error) console.error("Failed to save message:", error);
+
+      const enrichedPrompt = `${currentPrompt}\n\nContext (auto): Arrival airport: ${arrivalAirport}; Selected hotel: ${h.name}.\n\n---\nExisting room context (for updating, not regenerating):\n${buildAdealyContextBlock()}\n---`;
+
+      supabase.from('room_state').update({
+        ai_status: 'thinking',
+        last_prompted_by: user.sub,
+      }).eq('room_id', roomId).then();
+
+      setAiStatus('thinking');
+      setAiPromptedBy(user.sub);
+      setStreamStatus({ step: 0, total: 4, message: 'Planning your trip...' });
+
+      fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room_id: roomId, prompt: enrichedPrompt, auth0_id: user.sub })
+      }).catch(err => console.error("Chat API error:", err));
+    } catch (e) {
+      console.warn('[AutoPrompt] Failed to auto-prompt Adealy:', e);
+      setAiStatus('idle');
+      setStreamStatus(null);
+    }
+  };
+
+  const openHotels = () => {
+    const location = String(trip?.destination || '').trim();
+    const checkin = String(trip?.startDate || '').trim();
+    const checkout = String(trip?.endDate || '').trim();
+
+    setHotelsError(null);
+    setHotels([]);
+    setHotelsSearchUrl(null);
+    setHotelsQuery(prev => ({
+      ...prev,
+      location: location || prev.location,
+      checkin: checkin || prev.checkin,
+      checkout: checkout || prev.checkout,
+    }));
+    setShowHotelsModal(true);
+
+    setViewMode('map');
+    if (roomId) supabase.from('room_state').update({ focused_view: 'map' }).eq('room_id', roomId).then();
+
+    // Auto-run search when we have enough trip context.
+    if (location && checkin && checkout && !hotelsLoading) {
+      const travelers = Number((trip as any)?.summary?.travelers) || 2;
+      const adults = Math.max(1, travelers);
+
+      setHotelsLoading(true);
+      searchHotels({
+        location,
+        checkin,
+        checkout,
+        adults,
+        children: 0,
+        rooms: 1,
+        currency: hotelsQuery.currency || 'USD',
+      })
+        .then(res => {
+          setHotels(res.hotels || []);
+          setHotelsSearchUrl(res.searchUrl || null);
+        })
+        .catch((e: any) => {
+          setHotelsError(e?.message || 'Failed to search hotels');
+        })
+        .finally(() => {
+          setHotelsLoading(false);
+        });
+    }
+  };
+
+  const runHotelsSearch = async () => {
+    if (!hotelsQuery.location || !hotelsQuery.checkin || !hotelsQuery.checkout) {
+      setHotelsError('Please provide location, check-in, and check-out dates.');
+      return;
+    }
+
+    setHotelsLoading(true);
+    setHotelsError(null);
+    try {
+      const res = await searchHotels({
+        location: hotelsQuery.location,
+        checkin: hotelsQuery.checkin,
+        checkout: hotelsQuery.checkout,
+        adults: Number(hotelsQuery.adults) || 1,
+        children: Number(hotelsQuery.children) || 0,
+        rooms: Number(hotelsQuery.rooms) || 1,
+        currency: hotelsQuery.currency || 'USD',
+      });
+
+      setHotels(res.hotels || []);
+      setHotelsSearchUrl(res.searchUrl || null);
+    } catch (e: any) {
+      setHotelsError(e?.message || 'Failed to search hotels');
+    } finally {
+      setHotelsLoading(false);
+    }
+  };
 
   const [trip, setTrip] = useState<Trip | null>(null);
   const [cards, setCards] = useState<TripCard[]>([]);
   const [cart, setCart] = useState<TripCard[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
   const [profileData, setProfileData] = useState<any>(null);
+  const [arrivalAirportEdit, setArrivalAirportEdit] = useState('');
+  const [arrivalAirportSuggestions, setArrivalAirportSuggestions] = useState<any[]>([]);
+  const [savingArrivalAirport, setSavingArrivalAirport] = useState(false);
 
   const { user, isAuthenticated } = useAuth0();
+
+  useEffect(() => {
+    autoHotelsLoadedRef.current = false;
+  }, [roomId]);
+
+  useEffect(() => {
+    if (!trip || !roomId) return;
+    if (aiStatus === 'booked') return;
+    if (autoHotelsLoadedRef.current) return;
+
+    const safeCardsNow = Array.isArray(cards) ? cards : [];
+    const hasStaySelected = safeCardsNow.some((c: any) => c?.type === 'stay');
+    if (hasStaySelected) return;
+
+    const location = String(trip.destination || '').trim();
+    const checkin = String((trip as any).startDate || '').trim();
+    const checkout = String((trip as any).endDate || '').trim();
+    if (!location || !checkin || !checkout) return;
+
+    autoHotelsLoadedRef.current = true;
+    openHotels();
+  }, [trip, roomId, cards, aiStatus]);
+
+  useEffect(() => {
+    setArrivalAirportEdit(String(trip?.arrivalAirport || ''));
+  }, [trip]);
+
+  useEffect(() => {
+    const q = arrivalAirportEdit.trim();
+    if (q.length < 2) {
+      setArrivalAirportSuggestions([]);
+      return;
+    }
+
+    if (/^[A-Z]{3}$/.test(q)) {
+      setArrivalAirportSuggestions([]);
+      return;
+    }
+
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch('/api/data/airports', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ city: q, limit: 15 }),
+        });
+        const data = await res.json();
+        setArrivalAirportSuggestions(Array.isArray(data?.airports) ? data.airports : []);
+      } catch (e) {
+        console.warn('[Config] Failed to search airports', e);
+        setArrivalAirportSuggestions([]);
+      }
+    }, 250);
+
+    return () => clearTimeout(t);
+  }, [arrivalAirportEdit]);
+
+  const saveArrivalAirport = async () => {
+    if (!roomId) return;
+    if (!trip) return;
+    setSavingArrivalAirport(true);
+    try {
+      const updatedTrip: Trip = { ...trip, arrivalAirport: arrivalAirportEdit.trim() };
+      setTrip(updatedTrip);
+      await supabase.from('messages').insert({
+        room_id: roomId,
+        content: `__TRIP_DATA__:${JSON.stringify(updatedTrip)}`,
+        is_ai: true,
+      });
+      setMessages(prev => [...prev, { is_ai: true, content: `✈️ Arrival airport updated to: ${arrivalAirportEdit.trim() || 'unknown'}.` }]);
+    } catch (e) {
+      console.warn('[Config] Failed to save arrival airport:', e);
+    } finally {
+      setSavingArrivalAirport(false);
+    }
+  };
   useEffect(() => {
     if (user?.sub) {
       supabase.from('user_profiles').select('*').eq('auth0_id', user.sub).single().then(({ data }) => {
@@ -122,7 +606,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   const [viewMode, setViewMode] = useState<'map' | 'timeline'>('map');
   const [activeTab, setActiveTab] = useState<'design' | 'saved' | 'purchasing' | 'config'>('design');
   const [selectedDay, setSelectedDay] = useState<number>(0);
-  const [activeLayer, setActiveLayer] = useState<'all' | 'stay' | 'activity' | 'transport'>('all');
+  const [activeLayer, setActiveLayer] = useState<'all' | 'stay' | 'activity' | 'transport' | 'flight'>('all');
   const [focusedCardId, setFocusedCardId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -138,7 +622,11 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 
     // Further filter by active mode if not 'all'
     if (activeLayer !== 'all') {
-      visibleCards = visibleCards.filter(c => c.type === activeLayer);
+      visibleCards = visibleCards.filter(c => {
+        if (activeLayer === 'flight') return c.type === 'transport' && (c as any)?.data?.mode === 'flight';
+        if (activeLayer === 'transport') return c.type === 'transport' && (c as any)?.data?.mode !== 'flight';
+        return c.type === activeLayer;
+      });
     }
 
     if (visibleCards.length === 0) return;
@@ -358,9 +846,121 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
     return () => { if (channel) supabase.removeChannel(channel); }
   }, [roomId, user?.sub]);
 
+  // Ensure trip has a reasonable map center (used as a fallback for missing coordinates).
+  useEffect(() => {
+    if (!roomId) return;
+    if (!trip) return;
+    if (centerGeocodeRef.current) return;
+
+    const existing = (trip as any)?.center;
+    if (isValidLatLng(existing?.lat, existing?.lng)) {
+      centerGeocodeRef.current = true;
+      return;
+    }
+
+    const destination = String((trip as any)?.destination || '').trim();
+    if (!destination) return;
+
+    centerGeocodeRef.current = true;
+    geocodeBestEffort(destination).then((geo) => {
+      if (!geo) return;
+      const updatedTrip: any = { ...(trip as any), center: { lat: geo.lat, lng: geo.lng } };
+      setTrip(updatedTrip);
+      supabase.from('messages').insert({
+        room_id: roomId,
+        content: `__TRIP_DATA__:${JSON.stringify(updatedTrip)}`,
+        is_ai: true,
+      }).then();
+    });
+  }, [roomId, trip]);
+
+  // Fix existing flight transport cards that were created with (0,0) positions.
+  const flightFixRef = useRef(false);
+  useEffect(() => {
+    if (!roomId) return;
+    if (!trip) return;
+    if (!Array.isArray(cards) || cards.length === 0) return;
+    if (flightFixRef.current) return;
+
+    const hasBrokenFlight = cards.some((c: any) => {
+      if (c?.type !== 'transport') return false;
+      if (c?.data?.mode !== 'flight') return false;
+      const p = c?.position;
+      return !isValidLatLng(p?.lat, p?.lng) || (p?.lat === 0 && p?.lng === 0);
+    });
+
+    if (!hasBrokenFlight) {
+      flightFixRef.current = true;
+      return;
+    }
+
+    flightFixRef.current = true;
+
+    const resolveAirport = async (codeOrQuery: string) => {
+      const code = String(codeOrQuery || '').trim().toUpperCase();
+      if (!code) return null;
+      try {
+        const res = await fetch('/api/data/airports', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ city: code, limit: 10 }),
+        });
+        const data = await res.json();
+        const list = Array.isArray(data?.airports) ? data.airports : [];
+        const match = list.find((a: any) => String(a?.code || '').toUpperCase() === code) || list[0];
+        if (match && isValidLatLng(Number(match.latitude), Number(match.longitude))) {
+          return { lat: Number(match.latitude), lng: Number(match.longitude), code: match.code, name: match.name };
+        }
+      } catch {
+        // ignore
+      }
+      // Fallback: geocode by name
+      const geo = await geocodeBestEffort(`${code} airport`);
+      return geo ? { lat: geo.lat, lng: geo.lng, code } : null;
+    };
+
+    (async () => {
+      const updatedCards: any[] = (cards as any[]).map((c: any) => ({ ...c, data: { ...(c?.data || {}) } }));
+      let changed = false;
+
+      for (let i = 0; i < updatedCards.length; i++) {
+        const c = updatedCards[i];
+        if (c?.type !== 'transport' || c?.data?.mode !== 'flight') continue;
+
+        const fromCode = String(c?.data?.from?.name || c?.data?.from?.code || '').trim();
+        const toCode = String(c?.data?.to?.name || c?.data?.to?.code || '').trim();
+        if (!fromCode || !toCode) continue;
+
+        const from = await resolveAirport(fromCode);
+        const to = await resolveAirport(toCode);
+        if (!from || !to) continue;
+
+        c.data.from = { ...(c.data.from || {}), name: fromCode.toUpperCase(), lat: from.lat, lng: from.lng };
+        c.data.to = { ...(c.data.to || {}), name: toCode.toUpperCase(), lat: to.lat, lng: to.lng };
+        c.position = { lat: to.lat, lng: to.lng };
+        changed = true;
+      }
+
+      if (!changed) return;
+
+      setCards(updatedCards);
+      const updatedTrip: any = { ...(trip as any), cards: updatedCards };
+      setTrip(updatedTrip);
+      supabase.from('messages').insert({
+        room_id: roomId,
+        content: `__TRIP_DATA__:${JSON.stringify(updatedTrip)}`,
+        is_ai: true,
+      }).then();
+    })();
+  }, [roomId, trip, cards]);
+
   useEffect(() => {
     let isActive = true;
     if (aiStatus === 'thinking' || aiStatus === 'booking') {
+      if (aiStatus === 'booking') {
+        setShowBookingModal(true);
+        bookingLastStepRef.current = 0;
+      }
       const runAnimation = async () => {
         try {
           const { mockStreamGenerator } = await import('@/services/mock-trip-service');
@@ -375,6 +975,28 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                 total: chunk.totalSteps,
                 message: aiStatus === 'booking' ? `AI is booking: ${chunk.message}...` : chunk.message
               });
+
+              if (aiStatus === 'booking') {
+                const queue = bookingQueueRef.current;
+                if (queue.length > 0 && chunk.step !== bookingLastStepRef.current) {
+                  bookingLastStepRef.current = chunk.step;
+                  const ratio = chunk.totalSteps > 0 ? (chunk.step / chunk.totalSteps) : 0;
+                  const toBookCount = Math.min(queue.length, Math.max(0, Math.ceil(ratio * queue.length)));
+                  const bookedSet = new Set(queue.slice(0, toBookCount));
+
+                  setCards(prev => prev.map((c: any) => {
+                    if (!queue.includes(c.id)) return c;
+                    const nextStatus = bookedSet.has(c.id) ? 'booked' : 'pending';
+                    return {
+                      ...c,
+                      data: {
+                        ...c.data,
+                        bookingStatus: nextStatus,
+                      },
+                    };
+                  }));
+                }
+              }
             }
           }
 
@@ -393,8 +1015,45 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
     return () => { isActive = false; };
   }, [aiStatus, aiPromptedBy, user?.sub, roomId]);
 
+  useEffect(() => {
+    if (aiStatus === 'booking') {
+      setShowBookingModal(true);
+    }
+    if (aiStatus === 'booked') {
+      setShowBookingModal(false);
+    }
+  }, [aiStatus]);
+
+  useEffect(() => {
+    // Persist final booked trip state once booking completes (only for the initiator)
+    if (aiStatus !== 'booked') return;
+    if (!roomId) return;
+    if (aiPromptedBy !== user?.sub) return;
+    if (!trip) return;
+
+    const persist = async () => {
+      try {
+        const currentCards = Array.isArray(cards) ? cards : [];
+        const updatedTrip = { ...(trip as any), cards: currentCards };
+        await supabase.from('messages').insert({
+          room_id: roomId,
+          content: `__TRIP_DATA__:${JSON.stringify(updatedTrip)}`,
+          is_ai: true,
+        });
+      } catch (e) {
+        console.warn('[Book] Failed to persist final trip data:', e);
+      }
+    };
+
+    persist();
+  }, [aiStatus, roomId, aiPromptedBy, user?.sub, trip, cards]);
+
   const handleGenerate = async () => {
-    if (!prompt.trim() || aiStatus !== 'idle') return;
+    if (!prompt.trim()) return;
+
+    // Trip is locked during payment and after archival.
+    if (aiStatus === 'booked') return;
+    if (aiStatus === 'payment' || someOnePaid) return;
 
     const currentPrompt = prompt;
     setPrompt("");
@@ -407,7 +1066,31 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
     });
     if (error) console.error("Failed to save message:", error);
 
-    if (currentPrompt.toLowerCase().includes('@adealy')) {
+    const mentionsAdealy = /(^|\s)@?adealy(\s|$)/i.test(currentPrompt);
+
+    const safeCardsNow = Array.isArray(cards) ? cards : [];
+    const primaryStay = safeCardsNow.find((c: any) => c?.type === 'stay' && c?.data?.isPrimaryStay);
+    const hasStaySelected = !!primaryStay || safeCardsNow.some((c: any) => c?.type === 'stay');
+
+    // While the bot is busy, allow human chat but block new prompts.
+    if (aiStatus !== 'idle' && mentionsAdealy) {
+      setMessages(prev => [...prev, { is_ai: true, content: "⏳ Adealy is busy right now — you can keep chatting, but please wait before mentioning @Adealy again." }]);
+      return;
+    }
+
+    if (aiStatus === 'idle' && mentionsAdealy) {
+      if (!hasStaySelected) {
+        setMessages(prev => [...prev, { is_ai: true, content: "🏨 Pick your hotel first: select a stay from the Stays modal (it opens automatically) and it will be pinned on the map. Then mention @Adealy to plan the rest." }]);
+        openHotels();
+        return;
+      }
+
+      const arrivalAirport = trip?.arrivalAirport;
+      const selectedStayName = primaryStay?.name || primaryStay?.data?.name;
+
+      const enrichedPrompt = `${currentPrompt}\n\nContext (auto): Arrival airport: ${arrivalAirport || 'unknown'}; Selected hotel: ${selectedStayName || 'unknown'}.`;
+      const enrichedPromptWithTrip = `${enrichedPrompt}\n\n---\nExisting room context (for updating, not regenerating):\n${buildAdealyContextBlock()}\n---`;
+
       // Broadcast thinking state to everyone
       supabase.from('room_state').update({
         ai_status: 'thinking',
@@ -421,7 +1104,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
       fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ room_id: roomId, prompt: currentPrompt, auth0_id: user?.sub })
+        body: JSON.stringify({ room_id: roomId, prompt: enrichedPromptWithTrip, auth0_id: user?.sub })
       }).catch(err => console.error("Chat API error:", err));
     }
   };
@@ -458,6 +1141,15 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
       if (res.ok) {
         setInviteMessage({ type: 'success', text: data.message });
         setInviteEmail('');
+
+        // Ensure members list updates immediately (realtime can be delayed/blocked).
+        supabase
+          .from('room_members')
+          .select('id, room_id, user_id, role, can_prompt_ai, user_profiles(email, first_name, last_name)')
+          .eq('room_id', roomId)
+          .then(({ data: mems }) => {
+            if (mems) setMembers(mems);
+          });
       } else {
         setInviteMessage({ type: 'error', text: data.error });
       }
@@ -509,15 +1201,16 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 
   const handlePay = async () => {
     if (!roomId || !user?.sub) return;
+    const userId = user.sub;
     setPaymentError(null);
 
     // 1. Instant local update for snappy UI
-    setHasPaidLocal(prev => Array.from(new Set([...prev, user.sub])));
+    setHasPaidLocal(prev => Array.from(new Set([...prev, userId])));
 
     // 2. Persist to messages table to survive reloads cleanly
     await supabase.from('messages').insert({
       room_id: roomId,
-      content: `__PAYMENT__:${user.sub}`,
+      content: `__PAYMENT__:${userId}`,
       is_ai: true
     });
 
@@ -529,13 +1222,14 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 
   const handleRefund = async () => {
     if (!roomId || !user?.sub) return;
+    const userId = user.sub;
     setPaymentError(null);
 
-    setHasPaidLocal(prev => prev.filter(id => id !== user.sub));
+    setHasPaidLocal(prev => prev.filter(id => id !== userId));
 
     await supabase.from('messages').insert({
       room_id: roomId,
-      content: `__REFUND__:${user.sub}`,
+      content: `__REFUND__:${userId}`,
       is_ai: true
     });
 
@@ -544,6 +1238,54 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
       ai_status: 'idle'
     }).eq('room_id', roomId);
     setAiStatus('idle');
+  };
+
+  const handleBook = async () => {
+    if (!roomId || !user?.sub) return;
+    if (!allPaid) return;
+    if (aiStatus === 'booking' || aiStatus === 'booked') return;
+
+    setPaymentError(null);
+    setShowCheckoutModal(false);
+    setShowBookingModal(true);
+
+    // Mark bookable items as booked (mock) and persist via __TRIP_DATA__
+    try {
+      const bookingTime = new Date().toISOString();
+      const pendingCards = (Array.isArray(cards) ? cards : []).map((c: any) => {
+        const needsBooking = !!(c?.data?.bookingUrl || (typeof c?.data?.price === 'number' && c.data.price > 0));
+        if (!needsBooking) return c;
+        const reference = `ADY-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+        return {
+          ...c,
+          data: {
+            ...c.data,
+            bookingStatus: 'pending',
+            bookingProvider: 'mock',
+            bookingReference: reference,
+            bookingConfirmedAt: bookingTime,
+          },
+        };
+      });
+
+      bookingQueueRef.current = pendingCards
+        .filter((c: any) => c?.data?.bookingStatus === 'pending')
+        .map((c: any) => c.id);
+
+      setCards(pendingCards);
+      if (trip) setTrip({ ...(trip as any), cards: pendingCards });
+    } catch (e) {
+      console.warn('[Book] Failed to persist booked cards:', e);
+    }
+
+    // Kick off booking animation / shared state
+    await supabase.from('room_state').update({
+      ai_status: 'booking',
+      last_prompted_by: user.sub,
+    }).eq('room_id', roomId);
+
+    setAiStatus('booking');
+    setAiPromptedBy(user.sub);
   };
 
 
@@ -568,7 +1310,11 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   const safeCards = Array.isArray(cards) ? cards : [];
   const displayedCards = safeCards.filter(c => {
     const dayMatch = selectedDay === 0 || c?.day === selectedDay;
-    const layerMatch = activeLayer === 'all' || c?.type === activeLayer;
+    const layerMatch =
+      activeLayer === 'all' ? true :
+        activeLayer === 'flight' ? (c?.type === 'transport' && (c as any)?.data?.mode === 'flight') :
+          activeLayer === 'transport' ? (c?.type === 'transport' && (c as any)?.data?.mode !== 'flight') :
+            c?.type === activeLayer;
     return dayMatch && layerMatch;
   });
 
@@ -580,18 +1326,9 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   const someOnePaid = hasPaidLocal.length > 0;
   const allPaid = members.length > 0 && hasPaidLocal.length === members.length;
   const splitTotal = members.length > 0 ? (calculatedBudgetUsed / members.length) : calculatedBudgetUsed;
-  const myMember = members.find(m => m.user_id === user?.sub);
   const myMemberHasPaid = user?.sub ? hasPaidLocal.includes(user.sub) : false;
 
-  // Auto-transition to booking if everyone paid
-  useEffect(() => {
-    if (aiStatus === 'payment' && allPaid && (isOwner || (members.length > 0 && members[0]?.user_id === user?.sub))) {
-      supabase.from('room_state').update({
-        ai_status: 'booking',
-        last_prompted_by: user?.sub
-      }).eq('room_id', roomId).then();
-    }
-  }, [allPaid, aiStatus, isOwner, members, user, roomId]);
+  // Booking starts explicitly via the "Book" button after all members pay.
 
 
   // Layer Subtotals
@@ -599,7 +1336,9 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
   const stayCost = stayCards.reduce((sum, c) => sum + (c?.data?.price || 0), 0);
   const activityCards = safeCards.filter(c => c?.type === 'activity');
   const activityCost = activityCards.reduce((sum, c) => sum + (c?.data?.price || 0), 0);
-  const transportCards = safeCards.filter(c => c?.type === 'transport');
+  const flightCards = safeCards.filter(c => c?.type === 'transport' && (c as any)?.data?.mode === 'flight');
+  const flightCost = flightCards.reduce((sum, c) => sum + (c?.data?.price || 0), 0);
+  const transportCards = safeCards.filter(c => c?.type === 'transport' && (c as any)?.data?.mode !== 'flight');
   const transportCost = transportCards.reduce((sum, c) => sum + (c?.data?.price || 0), 0);
 
 
@@ -647,10 +1386,11 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 
             <div className="space-y-1">
               <LayerItem icon={LayoutGrid} label="Itinerary" value={`${trip?.days || 0} days`} active={activeLayer === 'all'} onClick={() => setActiveLayer('all')} />
-              <LayerItem icon={BedDouble} label="Stays" value={stayCost === 0 ? "Free" : `${stayCards.length} • $${stayCost} `} color="text-orange-400" active={activeLayer === 'stay'} onClick={() => setActiveLayer('stay')} />
-              <LayerItem icon={Camera} label="Activities" value={activityCost === 0 ? "Free" : `${activityCards.length} • $${activityCost} `} color="text-blue-400" active={activeLayer === 'activity'} onClick={() => setActiveLayer('activity')} />
-              <LayerItem icon={Train} label="Transport" value={transportCost === 0 ? "Free" : `${transportCards.length} • $${transportCost} `} color="text-emerald-400" active={activeLayer === 'transport'} onClick={() => setActiveLayer('transport')} />
-              <LayerItem icon={CreditCard} label="Total Cost" value={calculatedBudgetUsed === 0 ? "Free" : `$${calculatedBudgetUsed} `} color="text-purple-400" />
+              <LayerItem icon={BedDouble} label="Stays" value={stayCost === 0 ? "Free" : `${stayCards.length} • ${formatMoney(stayCost)} `} color="text-orange-400" active={activeLayer === 'stay'} onClick={() => setActiveLayer('stay')} />
+              <LayerItem icon={Camera} label="Activities" value={activityCost === 0 ? "Free" : `${activityCards.length} • ${formatMoney(activityCost)} `} color="text-blue-400" active={activeLayer === 'activity'} onClick={() => setActiveLayer('activity')} />
+              <LayerItem icon={Plane} label="Flights" value={flightCost === 0 ? "Free" : `${flightCards.length} • ${formatMoney(flightCost)} `} color="text-sky-400" active={activeLayer === 'flight'} onClick={() => setActiveLayer('flight')} />
+              <LayerItem icon={Train} label="Transport" value={transportCost === 0 ? "Free" : `${transportCards.length} • ${formatMoney(transportCost)} `} color="text-emerald-400" active={activeLayer === 'transport'} onClick={() => setActiveLayer('transport')} />
+              <LayerItem icon={CreditCard} label="Total Cost" value={calculatedBudgetUsed === 0 ? "Free" : `${formatMoney(calculatedBudgetUsed)} `} color="text-purple-400" />
             </div>
           </div>
 
@@ -670,7 +1410,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                   onClick={() => setSelectedDay(0)}
                 >
                   <span className="font-medium">All Days</span>
-                  <span className="text-xs font-bold opacity-80">{calculatedBudgetUsed === 0 ? "Free" : `$${calculatedBudgetUsed} `}</span>
+                  <span className="text-xs font-bold opacity-80">{calculatedBudgetUsed === 0 ? "Free" : `${formatMoney(calculatedBudgetUsed)} `}</span>
                 </button>
                 {Array.from({ length: trip.days }).map((_, i) => {
                   const dayNum = i + 1;
@@ -690,7 +1430,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                           <span className="font-medium">Day {dayNum}</span>
                           <span className="text-[10px] opacity-70">{trip?.destination?.split(',')[0] || "City"}</span>
                         </div>
-                        <span className="text-xs font-bold opacity-80">{dayCost === 0 ? "Free" : `$${dayCost} `}</span>
+                        <span className="text-xs font-bold opacity-80">{dayCost === 0 ? "Free" : `${formatMoney(dayCost)} `}</span>
                       </button>
 
                       <AnimatePresence>
@@ -713,10 +1453,13 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                                   <div className="flex items-center gap-2">
                                     <div className={cn(
                                       "relative flex items-center justify-center h-6 w-6 rounded-md shadow-sm",
-                                      card.type === 'transport' ? "bg-emerald-500/10 text-emerald-500" : "bg-sidebar-accent/50 text-foreground"
+                                      card.type === 'transport'
+                                        ? (card.data.mode === 'flight' ? "bg-sky-500/10 text-sky-500" : "bg-emerald-500/10 text-emerald-500")
+                                        : "bg-sidebar-accent/50 text-foreground"
                                     )}>
                                       {card.type === 'stay' ? <BedDouble className="h-3 w-3" /> :
                                         card.type === 'activity' ? <Camera className="h-3 w-3" /> :
+                                          card.data.mode === 'flight' ? <Plane className="h-3 w-3" /> :
                                           card.data.mode === 'walking' ? <Footprints className="h-3 w-3" /> :
                                             card.data.mode === 'driving' ? <Car className="h-3 w-3" /> :
                                               card.data.mode === 'bicycling' ? <Bike className="h-3 w-3" /> :
@@ -726,13 +1469,19 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                                     <div className="flex-1 min-w-0">
                                       <span className={cn(
                                         "text-xs font-medium block truncate transition-colors",
-                                        card.type === 'transport' ? "text-emerald-500/80 group-hover/timeline:text-emerald-500" : "text-foreground group-hover/timeline:text-primary"
+                                        card.type === 'transport'
+                                          ? (card.data.mode === 'flight' ? "text-sky-500/80 group-hover/timeline:text-sky-500" : "text-emerald-500/80 group-hover/timeline:text-emerald-500")
+                                          : "text-foreground group-hover/timeline:text-primary"
                                       )}>
                                         {card.name}
                                       </span>
                                       <span className="text-[10px] text-muted-foreground block truncate">
-                                        {card.type === 'transport' && (card.data.mode && card.data.mode.charAt(0).toUpperCase() + card.data.mode.slice(1) + " • ")}
-                                        {card.data.price === 0 ? "Free" : `$${card.data.price || 0} `}
+                                        {card.type === 'transport' && card.data.mode && (
+                                          card.data.mode === 'flight'
+                                            ? 'Flight • '
+                                            : (card.data.mode.charAt(0).toUpperCase() + card.data.mode.slice(1) + " • ")
+                                        )}
+                                        {card.data.price === 0 ? "Free" : `${formatMoney(card.data.price || 0)} `}
                                       </span>
                                     </div>
                                   </div>
@@ -753,14 +1502,17 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
         {/* User Profile */}
         <div className="p-4 border-t border-sidebar-border">
           <div className="flex items-center gap-3 cursor-pointer group hover:bg-sidebar-accent/10 p-2 rounded-lg transition-colors" onClick={() => setLocation("/profile")}>
-            {user?.picture ? (
-              <img src={user.picture} alt="Profile" className="h-8 w-8 rounded-full border border-sidebar-border" />
-            ) : (
-              <div className="h-8 w-8 rounded-full bg-gradient-to-tr from-purple-500 to-blue-500 border border-sidebar-border" />
-            )}
+            <img
+              src={user?.picture || DEFAULT_AVATAR_URL}
+              alt="Profile"
+              className="h-8 w-8 rounded-full border border-sidebar-border object-cover"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).src = DEFAULT_AVATAR_URL;
+              }}
+            />
             <div className="flex-1 overflow-hidden">
               <p className="text-sm font-medium truncate group-hover:text-primary transition-colors">
-                {profileData?.first_name ? `${profileData.first_name} ${profileData.last_name || ''} ` : user?.name || "Guest"}
+                {getBestMyDisplayName()}
               </p>
               <p className="text-xs text-muted-foreground truncate">
                 {profileData?.passport_country ? `${profileData.passport_country} Passport` : "Complete Profile"}
@@ -775,9 +1527,9 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
       <main className="flex-1 flex flex-col relative min-w-0">
 
         {/* Top Header */}
-        <header className="h-14 bg-background/80 backdrop-blur-md border-b border-border absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-4">
+        <header className="h-14 bg-background/80 backdrop-blur-md border-b border-border absolute top-0 left-0 right-0 z-30 flex items-center gap-4 px-4">
           {/* Trip Title & Status */}
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 shrink-0">
             <div className="flex items-center gap-2">
               {isEditingName ? (
                 <input
@@ -862,29 +1614,31 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
           </div>
 
           {/* Center Toggles */}
-          < div className="absolute left-1/2 -translate-x-1/2 flex items-center bg-muted p-1 rounded-lg border border-border/50" >
-            <button
-              onClick={() => {
-                setViewMode('map');
-                if (roomId) supabase.from('room_state').update({ focused_view: 'map' }).eq('room_id', roomId).then();
-              }}
-              className={cn("px-3 py-1 rounded-md text-xs font-medium transition-all flex items-center gap-2", viewMode === 'map' ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}
-            >
-              <MapIcon className="h-3 w-3" /> Map
-            </button>
-            <button
-              onClick={() => {
-                setViewMode('timeline');
-                if (roomId) supabase.from('room_state').update({ focused_view: 'timeline' }).eq('room_id', roomId).then();
-              }}
-              className={cn("px-3 py-1 rounded-md text-xs font-medium transition-all flex items-center gap-2", viewMode === 'timeline' ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}
-            >
-              <Calendar className="h-3 w-3" /> Timeline
-            </button>
-          </div >
+          <div className="flex-1 flex justify-center min-w-0">
+            <div className="flex items-center bg-muted p-1 rounded-lg border border-border/50">
+              <button
+                onClick={() => {
+                  setViewMode('map');
+                  if (roomId) supabase.from('room_state').update({ focused_view: 'map' }).eq('room_id', roomId).then();
+                }}
+                className={cn("px-3 py-1 rounded-md text-xs font-medium transition-all flex items-center gap-2", viewMode === 'map' ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}
+              >
+                <MapIcon className="h-3 w-3" /> Map
+              </button>
+              <button
+                onClick={() => {
+                  setViewMode('timeline');
+                  if (roomId) supabase.from('room_state').update({ focused_view: 'timeline' }).eq('room_id', roomId).then();
+                }}
+                className={cn("px-3 py-1 rounded-md text-xs font-medium transition-all flex items-center gap-2", viewMode === 'timeline' ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}
+              >
+                <Calendar className="h-3 w-3" /> Timeline
+              </button>
+            </div>
+          </div>
 
           {/* Right Actions */}
-          < div className="flex items-center gap-4" >
+          <div className="flex items-center gap-4 shrink-0" >
             {/* Budget Bar */}
             {/* Budget Bar */}
             <div className="hidden xl:flex items-center gap-3 bg-muted px-3 py-1.5 rounded-full border border-border/10 shrink-0">
@@ -900,13 +1654,24 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
             <ModeToggle />
 
             {(aiStatus === 'idle' || aiStatus === 'payment') && (
-              <Button
-                onClick={() => setShowCheckoutModal(true)}
-                size="sm"
-                className="bg-emerald-600 hover:bg-emerald-700 text-white h-8 text-xs gap-2"
-              >
-                <CreditCard className="h-3 w-3" /> Checkout
-              </Button>
+              allPaid ? (
+                <Button
+                  onClick={handleBook}
+                  size="sm"
+                  disabled={!isOwner}
+                  className="bg-primary hover:bg-primary/90 text-primary-foreground h-8 text-xs gap-2 disabled:opacity-60"
+                >
+                  <Zap className="h-3 w-3" /> {isOwner ? 'Book' : 'Waiting to book'}
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => setShowCheckoutModal(true)}
+                  size="sm"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white h-8 text-xs gap-2"
+                >
+                  <CreditCard className="h-3 w-3" /> Checkout
+                </Button>
+              )
             )}
 
             {aiStatus !== 'booked' && (
@@ -964,68 +1729,6 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
           </div>
         )}
 
-        {/* Checkout Modal Overlay */}
-        {showCheckoutModal && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowCheckoutModal(false)}>
-            <div className="bg-sidebar border border-sidebar-border rounded-2xl p-6 w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2">
-                  <CreditCard className="h-5 w-5 text-emerald-500" />
-                  <h2 className="font-bold text-base">Shared Checkout</h2>
-                </div>
-                <button onClick={() => setShowCheckoutModal(false)} className="text-muted-foreground hover:text-foreground text-lg leading-none">&times;</button>
-              </div>
-
-              <div className="bg-muted/50 rounded-xl p-4 mb-4 space-y-2 border border-border/50">
-                <div className="flex justify-between text-xs">
-                  <span className="text-muted-foreground">Split among</span>
-                  <span className="font-semibold">{members.length} people</span>
-                </div>
-                <div className="flex justify-between text-xs font-bold pt-1 border-t border-border/20 mt-1">
-                  <span>Your Share</span>
-                  <span className="text-emerald-500 font-serif text-lg">${splitTotal}</span>
-                </div>
-              </div>
-
-              {/* Individual Status */}
-              <div className="space-y-2 mb-6 max-h-40 overflow-y-auto pr-1">
-                <p className="text-[10px] uppercase font-bold text-gray-500 ml-1 mb-1">Payment Status</p>
-                {members.map((m: any) => (
-                  <div key={m.user_id} className="flex items-center justify-between bg-muted/30 p-2 rounded-lg border border-border/10">
-                    <div className="flex items-center gap-2 overflow-hidden">
-                      <div className="h-5 w-5 rounded-full bg-primary/10 flex items-center justify-center text-[10px] font-bold text-primary shrink-0">
-                        {m.user_profiles?.first_name?.[0] || 'U'}
-                      </div>
-                      <span className="text-xs truncate">{m.user_id === user?.sub ? 'You' : m.user_profiles?.first_name || 'Member'}</span>
-                    </div>
-                    <Badge variant="outline" className="bg-amber-500/10 text-amber-500 border-0 text-[10px] gap-1">
-                      <Clock className="h-2.5 w-2.5" /> Pending
-                    </Badge>
-                  </div>
-                ))}
-              </div>
-
-              <div className="space-y-4 mb-6">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] uppercase font-bold text-gray-500 ml-1">Mock Card Details</label>
-                  <div className="bg-muted border border-border/50 rounded-lg px-3 py-2 flex items-center gap-2 opacity-60">
-                    <CreditCard className="h-3.5 w-3.5 text-muted-foreground" />
-                    <span className="text-xs">4242 •••• •••• 4242</span>
-                  </div>
-                </div>
-              </div>
-
-              <Button onClick={() => setShowCheckoutModal(false)} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-6 rounded-xl shadow-lg shadow-emerald-600/20">
-                Close (Checkout Disabled)
-              </Button>
-
-              <p className="text-[10px] text-center text-muted-foreground mt-4 italic">
-                Booking animation starts after all members pay.
-              </p>
-            </div>
-          </div>
-        )}
-
         {/* Content View */}
         <div className="flex-1 relative bg-background pt-14 flex flex-col min-h-0">
           {viewMode === 'map' ? (
@@ -1065,31 +1768,40 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                         <div className={cn(
                           "h-8 w-8 rounded-full border-2 border-white shadow-xl flex items-center justify-center text-xs font-bold text-white relative",
                           card.type === 'stay' ? "bg-orange-500" :
-                            card.type === 'activity' ? "bg-blue-500" : "bg-emerald-500"
+                            card.type === 'activity' ? "bg-blue-500" : ((card as any)?.data?.mode === 'flight' ? "bg-sky-500" : "bg-emerald-500")
                         )}>
                           {card.type === 'stay' ? <BedDouble className="h-4 w-4" /> :
                             card.type === 'activity' ? <Camera className="h-4 w-4" /> :
-                              <Train className="h-4 w-4" />
+                              ((card as any)?.data?.mode === 'flight' ? <Plane className="h-4 w-4" /> : <Train className="h-4 w-4" />)
                           }
                         </div>
                         <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-0.5 h-2 bg-white/50" />
                       </div>
                     </MarkerContent>
                     <MarkerPopup className="bg-[#1e1e1e] border border-white/10 p-4 rounded-xl shadow-2xl min-w-[220px]">
+                      <div className="rounded-lg overflow-hidden border border-white/10 mb-3">
+                        <img
+                          src={getOptimizedImageUrl(getCardImageUrl(card), 440, 220)}
+                          alt={card.name}
+                          className="h-24 w-full object-cover"
+                          loading="lazy"
+                          onError={(e) => ensureImgFallback(e.currentTarget, getPlaceholderImageUrl(String(card?.name || card?.data?.name || 'Location'), 440, 220))}
+                        />
+                      </div>
                       <div className="flex items-center justify-between mb-2">
                         <Badge variant="outline" className={cn(
                           "text-[10px] uppercase border-0 bg-opacity-20",
                           card.type === 'stay' ? "bg-orange-500 text-white" :
-                            card.type === 'activity' ? "bg-blue-500 text-white" : "bg-emerald-500 text-white"
+                            card.type === 'activity' ? "bg-blue-500 text-white" : ((card as any)?.data?.mode === 'flight' ? "bg-sky-500 text-white" : "bg-emerald-500 text-white")
                         )}>
-                          {card.type}
+                          {card.type === 'transport' && (card as any)?.data?.mode === 'flight' ? 'flight' : card.type}
                         </Badge>
                         <span className="text-[10px] text-gray-500">Day {card.day}</span>
                       </div>
                       <h4 className="text-sm font-bold text-white mb-1">{card.name}</h4>
                       {card.data.price !== undefined && (
                         <p className="text-xs text-gray-400 mb-2">
-                          {card.data.price === 0 ? "Free" : `$${card.data.price} per person`}
+                          {card.data.price === 0 ? "Free" : `${formatMoney(card.data.price)} per person`}
                         </p>
                       )}
 
@@ -1101,6 +1813,30 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                     </MarkerPopup>
                   </MapMarker>
                 )
+              ))}
+
+              {/* Hotel option markers (during stay selection) */}
+              {showHotelsModal && hotels.map((h, idx) => (
+                typeof h.latitude === 'number' && typeof h.longitude === 'number' ? (
+                  <MapMarker
+                    key={`hotel-option-${idx}`}
+                    latitude={h.latitude}
+                    longitude={h.longitude}
+                  >
+                    <MarkerContent>
+                      <div
+                        className="relative group/marker cursor-pointer transition-transform hover:scale-110"
+                        onClick={() => selectHotel(h)}
+                        title={`Select ${h.name}`}
+                      >
+                        <div className="h-7 w-7 rounded-full border-2 border-white shadow-xl flex items-center justify-center text-white bg-orange-500">
+                          <BedDouble className="h-3.5 w-3.5" />
+                        </div>
+                        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-0.5 h-2 bg-white/50" />
+                      </div>
+                    </MarkerContent>
+                  </MapMarker>
+                ) : null
               ))}
 
               {/* Floating Progress Status */}
@@ -1257,24 +1993,35 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                                   <div>
                                     <div className="flex items-center justify-between mb-2">
                                       <h3 className="font-serif text-xl font-bold group-hover:text-primary transition-colors">{card.name}</h3>
-                                      <span className="text-sm font-bold bg-primary/10 text-primary px-2 py-1 rounded-md">
-                                        {card.data.price === 0 || !card.data.price ? "Free" : `$${Number(card.data.price).toFixed(2)}`}
-                                      </span>
+                                      <div className="flex items-center gap-2">
+                                        {card?.data?.bookingStatus === 'pending' && (
+                                          <Badge variant="outline" className="text-[10px] font-black uppercase bg-amber-500/10 text-amber-600 border-amber-500/20 gap-1">
+                                            <span className="inline-block h-2.5 w-2.5 rounded-full border-2 border-amber-500/30 border-t-amber-600 animate-spin" />
+                                            Booking
+                                          </Badge>
+                                        )}
+                                        {card?.data?.bookingStatus === 'booked' && (
+                                          <Badge variant="outline" className="text-[10px] font-black uppercase bg-emerald-500/10 text-emerald-600 border-emerald-500/20 gap-1">
+                                            <Check className="h-3 w-3" /> Booked
+                                          </Badge>
+                                        )}
+                                        <span className="text-sm font-bold bg-primary/10 text-primary px-2 py-1 rounded-md">
+                                          {card.data.price === 0 || !card.data.price ? "Free" : `${formatMoney(card.data.price)}`}
+                                        </span>
+                                      </div>
                                     </div>
                                     <div className="text-sm text-muted-foreground leading-relaxed line-clamp-2 md:line-clamp-none">{card.data.description}</div>
                                   </div>
 
-                                  {/* Cloudinary-optimized image for stay and activity cards */}
-                                  {card.data.imageUrl && card.type !== 'transport' && (
-                                    <div className="rounded-xl overflow-hidden h-40 w-full mt-1 border border-border/30 shadow-inner">
-                                      <img
-                                        src={getOptimizedImageUrl(card.data.imageUrl, 800, 400)}
-                                        alt={card.name}
-                                        className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
-                                        loading="lazy"
-                                      />
-                                    </div>
-                                  )}
+                                  <div className="rounded-xl overflow-hidden h-40 w-full mt-1 border border-border/30 shadow-inner">
+                                    <img
+                                      src={getOptimizedImageUrl(getCardImageUrl(card), 800, 400)}
+                                      alt={card.name}
+                                      className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                                      loading="lazy"
+                                      onError={(e) => ensureImgFallback(e.currentTarget, getPlaceholderImageUrl(String(card?.name || card?.data?.name || 'Location'), 800, 400))}
+                                    />
+                                  </div>
 
 
                                   {card.type === 'transport' && card.data.from && card.data.to && (() => {
@@ -1337,9 +2084,9 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
       </main >
 
       {/* 3. Right Sidebar - Copilot/Chat */}
-      < aside className="w-[380px] bg-sidebar border-l border-sidebar-border flex flex-col shrink-0 z-20" >
+      <aside className="w-[380px] bg-sidebar border-l border-sidebar-border flex flex-col shrink-0 z-20" >
         {/* Tabs */}
-        < div className="flex items-center p-2 border-b border-sidebar-border" >
+        <div className="flex items-center p-2 border-b border-sidebar-border" >
           {
             ['design', 'saved', 'purchasing', 'config'].map((tab) => (
               <button
@@ -1428,16 +2175,16 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                         <div className="flex items-center gap-3">
                           <div className={cn("h-8 w-8 rounded-md flex items-center justify-center",
                             item.type === 'stay' ? "bg-orange-500/10 text-orange-500" :
-                              item.type === 'activity' ? "bg-blue-500/10 text-blue-500" : "bg-emerald-500/10 text-emerald-500"
+                              item.type === 'activity' ? "bg-blue-500/10 text-blue-500" : ((item as any)?.data?.mode === 'flight' ? "bg-sky-500/10 text-sky-500" : "bg-emerald-500/10 text-emerald-500")
                           )}>
-                            {item.type === 'stay' ? <BedDouble className="h-4 w-4" /> : item.type === 'activity' ? <Camera className="h-4 w-4" /> : <Train className="h-4 w-4" />}
+                            {item.type === 'stay' ? <BedDouble className="h-4 w-4" /> : item.type === 'activity' ? <Camera className="h-4 w-4" /> : ((item as any)?.data?.mode === 'flight' ? <Plane className="h-4 w-4" /> : <Train className="h-4 w-4" />)}
                           </div>
                           <div>
                             <p className="text-xs font-bold truncate max-w-[150px]">{item.name}</p>
-                            <p className="text-[10px] text-muted-foreground capitalize">{item.type}</p>
+                            <p className="text-[10px] text-muted-foreground capitalize">{item.type === 'transport' && (item as any)?.data?.mode === 'flight' ? 'flight' : item.type}</p>
                           </div>
                         </div>
-                        <span className="text-xs font-bold text-foreground">${Number(item.data.price || 0).toFixed(2)}</span>
+                        <span className="text-xs font-bold text-foreground">{formatMoney(item.data.price || 0)}</span>
                       </div>
                     ))
                   )}
@@ -1477,12 +2224,22 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                 </div>
 
                 {(aiStatus === 'idle' || aiStatus === 'payment') && cart.length > 0 && (
-                  <Button
-                    onClick={() => setShowCheckoutModal(true)}
-                    className="w-full h-12 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all active:scale-95 shadow-lg shadow-emerald-500/20"
-                  >
-                    Initiate Checkout flow
-                  </Button>
+                  allPaid ? (
+                    <Button
+                      onClick={handleBook}
+                      disabled={!isOwner}
+                      className="w-full h-12 bg-primary hover:bg-primary/90 text-primary-foreground font-black text-xs uppercase tracking-widest rounded-xl transition-all active:scale-95 shadow-lg disabled:opacity-60"
+                    >
+                      {isOwner ? 'Book' : 'Waiting to book'}
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={() => setShowCheckoutModal(true)}
+                      className="w-full h-12 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-widest rounded-xl transition-all active:scale-95 shadow-lg shadow-emerald-500/20"
+                    >
+                      Initiate Checkout flow
+                    </Button>
+                  )
                 )}
               </div>
             </div>
@@ -1492,6 +2249,69 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                 <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Room</h3>
                 <p className="text-sm font-semibold">{roomName}</p>
                 <p className="text-[10px] text-muted-foreground break-all mt-0.5">{roomId}</p>
+              </div>
+
+              <div className="border border-border/50 rounded-xl p-4 space-y-3 bg-card">
+                <div className="flex items-center gap-2">
+                  <Search className="h-4 w-4 text-muted-foreground" />
+                  <h4 className="text-sm font-bold">Arrival airport</h4>
+                </div>
+                <p className="text-[11px] text-muted-foreground">Used as planning context when flights are skipped or unknown.</p>
+                <div className="relative">
+                  <input
+                    value={arrivalAirportEdit}
+                    onChange={(e) => setArrivalAirportEdit(e.target.value.toUpperCase())}
+                    placeholder="e.g. YYZ or Toronto"
+                    disabled={aiStatus === 'booked'}
+                    className="w-full px-3 py-2 text-xs bg-muted border border-border/50 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary/50 text-foreground placeholder:text-muted-foreground disabled:opacity-60"
+                  />
+                  {arrivalAirportSuggestions.length > 0 && arrivalAirportEdit.trim().length >= 2 && aiStatus !== 'booked' && (
+                    <div className="absolute z-20 mt-2 w-full bg-popover border border-border/60 rounded-lg overflow-hidden shadow-xl">
+                      {arrivalAirportSuggestions.slice(0, 8).map((a) => (
+                        <button
+                          key={`${a.code}-${a.name}`}
+                          type="button"
+                          className="w-full text-left px-3 py-2 text-xs hover:bg-muted flex items-center justify-between"
+                          onClick={() => {
+                            setArrivalAirportEdit(String(a.code || '').toUpperCase());
+                            setArrivalAirportSuggestions([]);
+                          }}
+                        >
+                          <span className="font-bold">{a.code}</span>
+                          <span className="text-muted-foreground truncate ml-2">{a.city ? `${a.city} — ` : ''}{a.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={saveArrivalAirport}
+                    disabled={aiStatus === 'booked' || savingArrivalAirport || !arrivalAirportEdit.trim()}
+                    className="h-8 text-xs px-3"
+                  >
+                    {savingArrivalAirport ? 'Saving...' : 'Save'}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setArrivalAirportEdit(String(trip?.arrivalAirport || ''));
+                      setArrivalAirportSuggestions([]);
+                    }}
+                    disabled={aiStatus === 'booked'}
+                    className="h-8 text-xs px-3"
+                  >
+                    Reset
+                  </Button>
+                  {aiStatus === 'booked' && (
+                    <span className="text-[11px] text-muted-foreground">Trip is finalized (view only)</span>
+                  )}
+                </div>
               </div>
 
               {/* Invite by Email (Owner only) */}
@@ -1620,12 +2440,24 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
 
                       {!isAi && (
                         <div className="flex-shrink-0 h-8 w-8 bg-blue-600 rounded-full flex items-center justify-center shadow-md overflow-hidden border border-border">
-                          {msg.sender_id === user?.sub && user?.picture ? (
-                            <img src={user.picture} alt="Avatar" className="h-full w-full object-cover" />
-                          ) : senderProfile?.avatar_url ? (
-                            <img src={senderProfile.avatar_url} alt="Avatar" className="h-full w-full object-cover" />
+                          {msg.sender_id === user?.sub ? (
+                            <img
+                              src={user?.picture || DEFAULT_AVATAR_URL}
+                              alt="Avatar"
+                              className="h-full w-full object-cover"
+                              onError={(e) => {
+                                (e.currentTarget as HTMLImageElement).src = DEFAULT_AVATAR_URL;
+                              }}
+                            />
                           ) : (
-                            <UserIcon className="h-4 w-4 text-white" />
+                            <img
+                              src={senderProfile?.avatar_url || DEFAULT_AVATAR_URL}
+                              alt="Avatar"
+                              className="h-full w-full object-cover"
+                              onError={(e) => {
+                                (e.currentTarget as HTMLImageElement).src = DEFAULT_AVATAR_URL;
+                              }}
+                            />
                           )}
                         </div>
                       )}
@@ -1668,19 +2500,19 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                 <textarea
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
-                  disabled={aiStatus !== "idle" || someOnePaid}
+                  disabled={aiStatus === 'booked' || aiStatus === 'payment' || someOnePaid}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
                       handleGenerate();
                     }
                   }}
-                  placeholder={aiStatus === 'booked' ? "Trip is finalized (View Only)" : (aiStatus === 'payment' || someOnePaid) ? "Bot locked (Payment in progress)" : aiStatus === 'thinking' ? "Adealy is thinking..." : aiStatus === 'booking' ? "Booking in progress..." : aiStatus === 'cooldown' ? "Cooling down..." : activeTab === 'saved' ? "Use saved items to generate plan..." : "Mention @Adealy to plan trip..."}
+                  placeholder={aiStatus === 'booked' ? "Trip is finalized (View Only)" : (aiStatus === 'payment' || someOnePaid) ? "Bot locked (Payment in progress)" : aiStatus === 'thinking' ? "Adealy is thinking... (you can chat, just avoid @Adealy)" : aiStatus === 'booking' ? "Booking in progress... (you can chat)" : aiStatus === 'cooldown' ? "Cooling down... (you can chat)" : activeTab === 'saved' ? "Use saved items to generate plan..." : "Mention @Adealy to plan trip..."}
                   className="w-full bg-muted border border-border/10 rounded-xl p-3 pr-10 text-sm text-foreground placeholder:text-muted-foreground min-h-[50px] max-h-[120px] resize-none focus:outline-none focus:ring-1 focus:ring-primary/50"
                 />
                 <button
                   onClick={handleGenerate}
-                  disabled={!prompt.trim() || aiStatus !== "idle" || someOnePaid}
+                  disabled={!prompt.trim() || aiStatus === 'booked' || aiStatus === 'payment' || someOnePaid}
                   className="absolute right-2 bottom-3 p-1.5 bg-primary rounded-lg text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   {aiStatus === 'booked' ? <Lock className="h-4 w-4" /> : (aiStatus === 'payment' || someOnePaid) ? <Lock className="h-4 w-4" /> : aiStatus !== "idle" ? <Zap className="h-4 w-4 animate-pulse" /> : <Send className="h-4 w-4" />}
@@ -1708,7 +2540,7 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
       {/* Checkout Modal Overlay */}
       {
         showCheckoutModal && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowCheckoutModal(false)}>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowCheckoutModal(false)}>
             <div className="bg-sidebar border border-sidebar-border rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-6" onClick={e => e.stopPropagation()}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -1812,16 +2644,268 @@ export default function PlannerPage({ roomId }: { roomId?: string }) {
                       </Button>
                     </div>
                   )}
+
+                  {allPaid && (
+                    <Button
+                      onClick={handleBook}
+                      disabled={!isOwner}
+                      className="w-full bg-primary hover:bg-primary/90 text-primary-foreground py-6 rounded-xl font-bold text-base shadow-lg disabled:opacity-60"
+                    >
+                      {isOwner ? 'Book' : 'Waiting for host to book'}
+                    </Button>
+                  )}
                 </div>
               )}
 
               <p className="text-[10px] text-center text-muted-foreground italic px-4">
-                Once everyone has paid, Adealy will finalize all bookings and the trip will be archived.
+                Once everyone has paid, the host can click Book to finalize (mock) bookings.
               </p>
             </div>
           </div>
         )
       }
+
+      {/* Booking Modal Overlay */}
+      {showBookingModal && aiStatus === 'booking' && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={() => setShowBookingModal(false)}>
+          <div className="bg-sidebar border border-sidebar-border rounded-2xl p-6 w-full max-w-lg shadow-2xl space-y-5" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="font-bold text-lg">Adealy is booking (mock)</h2>
+                <p className="text-xs text-muted-foreground">We’ll “book” flights/hotels/activities and update the itinerary live.</p>
+              </div>
+              <Button variant="ghost" size="sm" className="h-8 px-2" onClick={() => setShowBookingModal(false)}>
+                Hide
+              </Button>
+            </div>
+
+            <div className="bg-muted/50 rounded-xl p-4 border border-border/50 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-3.5 w-3.5 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+                  <span className="text-sm font-bold">Booking in progress</span>
+                </div>
+                {streamStatus && (
+                  <span className="text-xs text-muted-foreground">Step {streamStatus.step} / {streamStatus.total}</span>
+                )}
+              </div>
+              {streamStatus?.message && (
+                <div className="text-xs text-muted-foreground">{streamStatus.message}</div>
+              )}
+              {streamStatus && streamStatus.total > 0 && (
+                <div className="h-2 bg-background rounded-full overflow-hidden border border-border/40">
+                  <div
+                    className="h-full bg-primary rounded-full transition-all"
+                    style={{ width: `${Math.min(100, Math.max(0, (streamStatus.step / streamStatus.total) * 100))}%` }}
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2 max-h-[260px] overflow-y-auto pr-1">
+              <h3 className="text-[10px] font-black uppercase tracking-widest text-muted-foreground px-1">Itinerary booking status</h3>
+              {(Array.isArray(cards) ? cards : [])
+                .filter((c: any) => c?.data?.bookingStatus === 'pending' || c?.data?.bookingStatus === 'booked')
+                .map((c: any) => (
+                  <div key={c.id} className="flex items-center justify-between p-3 bg-card border border-border/50 rounded-xl">
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold truncate">{c.name}</div>
+                      <div className="text-[10px] text-muted-foreground capitalize">{c.type}</div>
+                    </div>
+                    {c?.data?.bookingStatus === 'pending' ? (
+                      <Badge variant="outline" className="text-[10px] font-black uppercase bg-amber-500/10 text-amber-600 border-amber-500/20 gap-1 shrink-0">
+                        <span className="inline-block h-2.5 w-2.5 rounded-full border-2 border-amber-500/30 border-t-amber-600 animate-spin" />
+                        Booking
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-[10px] font-black uppercase bg-emerald-500/10 text-emerald-600 border-emerald-500/20 gap-1 shrink-0">
+                        <Check className="h-3 w-3" /> Booked
+                      </Badge>
+                    )}
+                  </div>
+                ))}
+            </div>
+
+            <p className="text-[10px] text-muted-foreground italic">You can keep chatting while this runs (just don’t mention @Adealy).</p>
+          </div>
+        </div>
+      )}
+
+      {/* Hotels Modal Overlay */}
+      {showHotelsModal && (
+        <div className="fixed inset-0 z-[55] flex items-center justify-center bg-black/50" onClick={() => setShowHotelsModal(false)}>
+          <div className="bg-sidebar border border-sidebar-border rounded-2xl p-6 w-full max-w-3xl shadow-2xl space-y-5" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="font-bold text-lg">Find stays (Hotels API)</h2>
+                <p className="text-xs text-muted-foreground">Pulls live results from the backend scraper and opens Booking.com links.</p>
+              </div>
+              <Button variant="ghost" size="sm" className="h-8 px-2" onClick={() => setShowHotelsModal(false)}>
+                Close
+              </Button>
+            </div>
+
+            {hotelsError && (
+              <div className="bg-rose-500/10 p-3 rounded-lg border border-rose-500/20 text-rose-500 text-xs text-center font-bold">
+                {hotelsError}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div className="md:col-span-2">
+                <label className="text-[10px] uppercase font-black tracking-widest text-muted-foreground">Location</label>
+                <input
+                  value={hotelsQuery.location}
+                  onChange={(e) => setHotelsQuery(q => ({ ...q, location: e.target.value }))}
+                  placeholder="Toronto, ON"
+                  className="mt-1 w-full px-3 py-2 text-sm bg-muted border border-border/50 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary/50"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase font-black tracking-widest text-muted-foreground">Check-in</label>
+                <input
+                  type="date"
+                  value={hotelsQuery.checkin}
+                  onChange={(e) => setHotelsQuery(q => ({ ...q, checkin: e.target.value }))}
+                  className="mt-1 w-full px-3 py-2 text-sm bg-muted border border-border/50 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary/50"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase font-black tracking-widest text-muted-foreground">Check-out</label>
+                <input
+                  type="date"
+                  value={hotelsQuery.checkout}
+                  onChange={(e) => setHotelsQuery(q => ({ ...q, checkout: e.target.value }))}
+                  className="mt-1 w-full px-3 py-2 text-sm bg-muted border border-border/50 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary/50"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div>
+                <label className="text-[10px] uppercase font-black tracking-widest text-muted-foreground">Adults</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={hotelsQuery.adults}
+                  onChange={(e) => setHotelsQuery(q => ({ ...q, adults: Number(e.target.value) }))}
+                  className="mt-1 w-full px-3 py-2 text-sm bg-muted border border-border/50 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary/50"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase font-black tracking-widest text-muted-foreground">Children</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={hotelsQuery.children}
+                  onChange={(e) => setHotelsQuery(q => ({ ...q, children: Number(e.target.value) }))}
+                  className="mt-1 w-full px-3 py-2 text-sm bg-muted border border-border/50 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary/50"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase font-black tracking-widest text-muted-foreground">Rooms</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={hotelsQuery.rooms}
+                  onChange={(e) => setHotelsQuery(q => ({ ...q, rooms: Number(e.target.value) }))}
+                  className="mt-1 w-full px-3 py-2 text-sm bg-muted border border-border/50 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary/50"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase font-black tracking-widest text-muted-foreground">Currency</label>
+                <input
+                  value={hotelsQuery.currency}
+                  onChange={(e) => setHotelsQuery(q => ({ ...q, currency: e.target.value.toUpperCase() }))}
+                  className="mt-1 w-full px-3 py-2 text-sm bg-muted border border-border/50 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary/50"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
+              <Button onClick={runHotelsSearch} disabled={hotelsLoading} className="h-11 font-black uppercase tracking-widest">
+                {hotelsLoading ? 'Searching…' : 'Search Hotels'}
+              </Button>
+              {hotelsSearchUrl && (
+                <a
+                  href={hotelsSearchUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs font-bold text-blue-500 hover:text-blue-400"
+                >
+                  Open full results on Booking.com
+                </a>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[360px] overflow-y-auto pr-1">
+              {hotels.length === 0 && !hotelsLoading ? (
+                <div className="md:col-span-2 h-28 flex items-center justify-center text-xs text-muted-foreground border-2 border-dashed border-border rounded-xl">
+                  No results yet — run a search.
+                </div>
+              ) : (
+                hotels.map((h, idx) => (
+                  <div key={idx} className="bg-card border border-border/50 rounded-xl overflow-hidden">
+                    <div className="h-40 bg-muted">
+                      <img
+                        src={getOptimizedImageUrl(h.image || `https://source.unsplash.com/800x400/?hotel,${encodeURIComponent(h.name || 'hotel')}`, 800, 400)}
+                        alt={h.name}
+                        className="h-full w-full object-cover"
+                        loading="lazy"
+                        onError={(e) => ensureImgFallback(e.currentTarget, getPlaceholderImageUrl(h.name || 'Hotel', 800, 400))}
+                      />
+                    </div>
+                    <div className="p-4 space-y-2">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-black truncate">{h.name}</div>
+                          <div className="text-[11px] text-muted-foreground line-clamp-2">{h.address || h.distanceFromCenter || ''}</div>
+                        </div>
+                        {typeof h.rating === 'number' && (
+                          <Badge variant="outline" className="text-[10px] font-black uppercase bg-blue-500/10 text-blue-500 border-blue-500/20 shrink-0">
+                            {h.rating.toFixed(1)}
+                          </Badge>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">Price</span>
+                        <span className="font-bold text-foreground">{h.priceTotal || h.pricePerNight || '—'}</span>
+                      </div>
+
+                      <div className="flex gap-2 pt-1">
+                        <Button
+                          variant="outline"
+                          className="h-9 text-xs font-black uppercase tracking-widest"
+                          onClick={() => selectHotel(h)}
+                        >
+                          Select
+                        </Button>
+                        {h.bookingUrl ? (
+                          <a
+                            href={h.bookingUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex-1"
+                          >
+                            <Button className="w-full h-9 text-xs font-black uppercase tracking-widest gap-2">
+                              <ExternalLink className="h-3 w-3" /> Open
+                            </Button>
+                          </a>
+                        ) : (
+                          <Button disabled className="flex-1 h-9 text-xs font-black uppercase tracking-widest">
+                            No link
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div >
   );
 }

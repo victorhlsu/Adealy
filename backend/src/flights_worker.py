@@ -119,6 +119,7 @@ def search_flights(request):
                     'currentPrice': 'unknown',
                     'count': 0,
                     'booking_url': booking_urls.get('primary'),
+                    'source': 'timeout',
                 }
 
     except Exception as e:
@@ -173,6 +174,7 @@ def _fetch_flights(from_airport, to_airport, date, return_date, adults, children
                 'currentPrice': 'unknown',
                 'count': 0,
                 'booking_url': booking_urls.get('primary') or booking_urls.get('fallback'),
+                'source': 'real',
             }
 
         # Convert to JSON-serializable format
@@ -204,6 +206,7 @@ def _fetch_flights(from_airport, to_airport, date, return_date, adults, children
             'currentPrice': getattr(result, 'current_price', 'typical'),
             'count': all_count,
             'booking_url': booking_urls.get('primary') or booking_urls.get('fallback'),
+            'source': 'real',
         }
 
     except Exception as fetch_error:
@@ -266,6 +269,7 @@ def _generate_mock_flights(from_airport, to_airport, date, booking_urls=None):
         'currentPrice': 'typical',
         'count': len(direct) + len(connecting),
         'booking_url': primary_url,
+        'source': 'mock',
     }
 
 

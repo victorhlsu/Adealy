@@ -173,3 +173,24 @@ export async function getItineraryPlan(payload: any) {
         body: JSON.stringify(payload),
     })
 }
+
+export type GeocodeResponse =
+    | {
+            status: 'ok'
+            query: string
+            latitude: number
+            longitude: number
+            address?: string | null
+      }
+    | {
+            status: 'error'
+            message: string
+            details?: string
+      }
+
+export async function geocodePlace(query: string) {
+    return apiFetch<GeocodeResponse>('/api/data/geocode', {
+        method: 'POST',
+        body: JSON.stringify({ query }),
+    })
+}

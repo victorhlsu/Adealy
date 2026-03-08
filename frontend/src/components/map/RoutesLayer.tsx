@@ -30,11 +30,18 @@ export function RoutesLayer({ cards, enabled, visibleDay, activeLayer }: { cards
     const routesToFetch = useMemo(() => {
         if (!enabled) return []
 
-        const relevantCards = cards.filter(c =>
+        let relevantCards = cards.filter(c =>
             c.type === 'transport' &&
             (visibleDay === undefined || visibleDay === 0 || c.day === visibleDay) &&
             c.data.from && c.data.to // Ensure we have start/end points
         );
+
+        // Separate flights from other transport when filtering.
+        if (activeLayer === 'flight') {
+            relevantCards = relevantCards.filter(c => c.data.mode === 'flight');
+        } else if (activeLayer === 'transport') {
+            relevantCards = relevantCards.filter(c => c.data.mode !== 'flight');
+        }
 
         return relevantCards.map(c => {
             // If the backend pre-fetched the geometry, put it in the cache immediately
@@ -52,7 +59,7 @@ export function RoutesLayer({ cards, enabled, visibleDay, activeLayer }: { cards
             };
         });
 
-    }, [cards, enabled, visibleDay])
+    }, [cards, enabled, visibleDay, activeLayer])
 
     useEffect(() => {
         mountedRef.current = true
@@ -67,7 +74,7 @@ export function RoutesLayer({ cards, enabled, visibleDay, activeLayer }: { cards
         const run = async () => {
             // Hide routes if viewing all days or if filtering by stay/activity
             const isIndividualDayView = visibleDay !== undefined && visibleDay !== 0;
-            const isTransportLayerActive = activeLayer === 'all' || activeLayer === 'transport';
+            const isTransportLayerActive = activeLayer === 'all' || activeLayer === 'transport' || activeLayer === 'flight';
 
             if (!routesToFetch.length || !isIndividualDayView || !isTransportLayerActive) {
                 setGeoms(null)
